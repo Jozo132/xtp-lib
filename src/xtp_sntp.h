@@ -39,7 +39,7 @@ void sntp_sync(const char* server, uint16_t port = 123) {
         return;
     }
     // Parse response
-    if (packet[0] & 0b11000000) {
+    if (packet[0] & 0b11000000 || packet[0] == 0b00100100) {
         uint32_t timestamp_s = 0;
         // Parse seconds
         uint32_t seconds = 0;
