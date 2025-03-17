@@ -38,6 +38,7 @@ EthernetClient analytics_target;
 
 uint32_t ethernet_cycle = 0;
 bool ethernet_link_established = true;
+int ethernet_link_status = 0;
 bool ethernet_is_connected();
 
 char ip_address[20];
@@ -45,10 +46,12 @@ char mac_address[18];
 
 void update_ip_status() {
     // Print IP address local_ip with padEnd filled with spaces
-    if (ethernet_link_established) {
+    if (ethernet_link_status == LinkON) {
         sprintf(msg, "   %s", ip_address);
-    } else {
+    } else if (ethernet_link_status == LinkOFF) {
         sprintf(msg, "    Disconnected");
+    } else { // Unknown
+        sprintf(msg, "       ??????   ");
     }
     int len = strlen(msg);
     for (len; len < 20; len++) {
@@ -65,7 +68,7 @@ void ethernet_init() {
     bool status = ethernet_is_connected();
     if (!status) {
         // if (ethernet_cycle % 100 == 0) {
-        if (Ethernet.linkStatus() == Unknown) {
+        if (ethernet_link_status == Unknown) {
             pinMode(ETH_RST_pin, OUTPUT);
             digitalWrite(ETH_RST_pin, LOW);
             delay(1);
@@ -100,6 +103,7 @@ void ethernet_init() {
         Serial.println("Switching to DHCP");
         flash_store_retained_data();
         ethernet_init();
+        update_ip_status();
         return;
     }
 
@@ -140,7 +144,8 @@ void ethernet_init() {
 
 bool ethernet_is_connected() {
     spi_select(SPI_Ethernet);
-    if (Ethernet.linkStatus() != LinkON) {
+    ethernet_link_status = Ethernet.linkStatus();
+    if (ethernet_link_status != LinkON) {
         if (ethernet_link_established) {
             Serial.println("Ethernet link is OFF");
             ethernet_link_established = false;
@@ -276,6 +281,8 @@ void ethernet_loop() {
     // Try to re-establish ethernet connection if it is lost
     if (ethernet_is_connected() && !ethernet_link_established) {
         ethernet_init();
+    } else {
+        update_ip_status();
     }
 
     spi_select(SPI_None);
