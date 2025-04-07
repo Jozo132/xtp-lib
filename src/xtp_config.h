@@ -177,6 +177,18 @@
 #define UART_BAUDRATE   115200
 
 
+#ifndef DEVICE_NAME
+#if defined(XTP_12A6_E)
+#define DEVICE_NAME "XTP12A6E"
+#elif defined(XTP_14A6_E)
+#define DEVICE_NAME "XTP14A6E"
+#else
+#define DEVICE_NAME "UNKNOWN"
+#endif // XTP_12A6_E
+#endif // DEVICE_NAME
+
+char DEFAULT_DEVICE_NAME[32] = DEVICE_NAME;
+
 
 DynamicJsonDocument json_buffer(8192);
 char json_buffer_str[8192];

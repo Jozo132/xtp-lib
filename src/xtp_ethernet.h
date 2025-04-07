@@ -178,6 +178,8 @@ void ethernet_setup() {
     local_mac[4] = MCU_UID[2];
     local_mac[5] = MCU_UID[0];
 
+    sprintf(DEFAULT_DEVICE_NAME, "%s-%02X%02X%02X%02X%02X", DEVICE_NAME, local_mac[1], local_mac[2], local_mac[3], local_mac[4], local_mac[5]);
+
     char msg[100];
     sprintf(mac_address, "%02x:%02x:%02x:%02x:%02x:%02x", local_mac[0], local_mac[1], local_mac[2], local_mac[3], local_mac[4], local_mac[5]);
     sprintf(msg, " %s", mac_address);
