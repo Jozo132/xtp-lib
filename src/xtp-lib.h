@@ -50,6 +50,7 @@ void xtp_setup() {
   spi_setup();
   flash_setup();
   IWatchdog.reload();
+  getDeviceUID();
   time_setup();
   // printDeviceUID();
   i2c_setup();

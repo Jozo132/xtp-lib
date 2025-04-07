@@ -252,8 +252,16 @@ void IntervalGlobalLoopCheck() {
     }
 }
 
+struct FlashInfo_t {
+    uint32_t JEDEC;
+    uint8_t manufacturer_id;
+    uint8_t memory_id;
+    uint32_t uid_a;
+    uint32_t uid_b;
+    int size;
+    int max_page;
+} flashInfo;
 
-bool MCU_UID_loaded = false;
 // uint8_t MCU_UID[12] = { 0 };
 
 // uint32_t* uid32ptr_0 = (uint32_t*) (STM32_UID_ADDRESS + 0x00);
@@ -296,6 +304,7 @@ const uint8_t MCU_UID[12] = {
     getIdPart(STM32_UID_ADDRESS, 2, 2),
     getIdPart(STM32_UID_ADDRESS, 2, 3),
 };
+const int MCU_UID_len = sizeof(MCU_UID) / sizeof(MCU_UID[0]);
 
 
 const char* project_path = __FILE__;
@@ -309,4 +318,45 @@ void printDeviceUID() {
         Serial.printf("%02X", MCU_UID[i]);
     }
     Serial.println();
+}
+
+void hashBytes(const uint8_t* input, const int input_len, uint8_t* output, const int output_len) {
+    for (int i = 0; i < output_len; i++) {
+        output[i] = 0;
+    }
+    for (int i = 0; i < input_len; i++) {
+        if (i < output_len) output[i] = input[i]; // Initial copy
+        else output[i % output_len] ^= input[i]; // XOR with overlapping bytes
+    }
+}
+
+uint8_t DEVICE_UID[4];
+
+bool MCU_UID_loaded = false;
+void getDeviceUID() {
+    if (MCU_UID_loaded) return;
+    MCU_UID_loaded = true;
+    int input_len = 12;
+    uint8_t input[12 + 8] = { 0 };
+    uint8_t output[4] = { 0 };
+    // Add MCU UID to input (12 bytes)
+    for (int i = 0; i < 12; i++) {
+        input[i] = MCU_UID[i];
+    }
+
+    input_len += 8; // 12 bytes + 8 bytes = 20 bytes
+    // Add flash UID to input [A] (4 bytes)
+    for (int i = 0; i < 4; i++) {
+        input[i + 12] = flashInfo.uid_a >> (i * 8) & 0xFF;
+    }
+    // Add flash UID to input [B] (4 bytes)
+    for (int i = 0; i < 4; i++) {
+        input[i + 16] = flashInfo.uid_b >> (i * 8) & 0xFF;
+    }
+    // Hash the input to get 4 bytes of output
+    hashBytes(input, input_len, output, 4);
+    // Copy the output to DEVICE_UID
+    for (int i = 0; i < 4; i++) {
+        DEVICE_UID[i] = output[i];
+    }
 }

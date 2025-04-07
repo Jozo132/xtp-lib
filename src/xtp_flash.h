@@ -15,16 +15,6 @@ void flash_print_info();
 
 uint8_t _flash_retain_image[RETAINED_DATA_SIZE];
 
-struct FlashInfo_t {
-    uint32_t JEDEC;
-    uint8_t manufacturer_id;
-    uint8_t memory_id;
-    uint32_t uid_a;
-    uint32_t uid_b;
-    int size;
-    int max_page;
-} flashInfo;
-
 void _flash_write(bool force = false);
 void _flash_read();
 

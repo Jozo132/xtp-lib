@@ -173,10 +173,10 @@ void ethernet_setup() {
 #else
     local_mac[1] = 0x69;
 #endif
-    local_mac[2] = MCU_UID[5];
-    local_mac[3] = MCU_UID[4];
-    local_mac[4] = MCU_UID[2];
-    local_mac[5] = MCU_UID[0];
+    local_mac[2] = DEVICE_UID[0];
+    local_mac[3] = DEVICE_UID[1];
+    local_mac[4] = DEVICE_UID[2];
+    local_mac[5] = DEVICE_UID[3];
 
     sprintf(DEFAULT_DEVICE_NAME, "%s-%02X%02X%02X%02X%02X", DEVICE_NAME, local_mac[1], local_mac[2], local_mac[3], local_mac[4], local_mac[5]);
 
