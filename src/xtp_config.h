@@ -175,8 +175,14 @@
 #endif // SPI_SCK_pin == SPI_EXP_SCK_pin
 
 // ######### PERIPHERAL SETTINGS #########
+
+#ifndef I2C_CLOCK
 #define I2C_CLOCK       200000
+#endif // I2C_CLOCK
+
+#ifndef UART_BAUDRATE
 #define UART_BAUDRATE   115200
+#endif // UART_BAUDRATE
 
 
 #ifndef DEVICE_NAME
