@@ -27,7 +27,9 @@
 #include "xtp_tools.h"
 #include "xtp_retain.h"
 
-#define THREAD_PERIOD_US 100
+#ifndef THREAD_PERIOD_US
+#define THREAD_PERIOD_US 1000 // 1ms
+#endif // THREAD_PERIOD_US
 
 #ifdef XTP_12A6_E
 
