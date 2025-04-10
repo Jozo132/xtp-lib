@@ -8,9 +8,9 @@
 // SPIClass MySPI(SPI_MOSI_pin, SPI_MISO_pin, SPI_SCK_pin);
 
 void spi_setup() {
-    SPI.setMOSI(PB15);
-    SPI.setMISO(PB14);
-    SPI.setSCLK(PB13);
+    SPI.setMOSI(SPI_MOSI_pin);
+    SPI.setMISO(SPI_MISO_pin);
+    SPI.setSCLK(SPI_SCK_pin);
 }
 
 enum SPIDeviceSelect_t {
