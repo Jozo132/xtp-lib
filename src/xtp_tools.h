@@ -63,6 +63,10 @@ public:
         }
         return false;
     }
+    bool finished() {
+        this->check();
+        return triggered;
+    }
     void reset() {
         this->last_trigger = millis();
         triggered = false;
