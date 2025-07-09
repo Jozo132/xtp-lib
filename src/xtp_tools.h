@@ -50,7 +50,7 @@ private:
     long last_trigger = 0;
     long duration = 1000;
 public:
-    Timeout(long timeout) {
+    Timeout(long timeout = 1000) {
         this->duration = timeout;
     }
     bool check() {
