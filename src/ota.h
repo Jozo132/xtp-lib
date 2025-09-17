@@ -44,6 +44,7 @@ void ota_setup() {
     // ota_storage.init();
     // OTA.setStorage(ota_storage);
     OTA.setHostname(XTP_DEVICE_NAME);
+    OTA.setPlatform("STM32");
     OTA.setPassword(ota_password);
     OTA.setPort(port);
 
