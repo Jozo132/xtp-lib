@@ -4,7 +4,9 @@
 #include "xtp-lib.h"
 
 // #include "OTAStorage.h"
+#ifndef OTA_CLASSIC
 #include <NOTA.h>
+#endif // OTA_CLASSIC
 
 
 #ifndef OTA_NAME

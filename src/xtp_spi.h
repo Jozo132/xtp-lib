@@ -11,7 +11,7 @@
 #if defined(AUX_MOSI_pin) && defined(AUX_MISO_pin) && defined(AUX_SCK_pin)
 #define EXP_SPI
 SPIClass SPI_EXP;
-#endif
+#endif // AUX SPI pins defined -> enable EXP_SPI
 
 void spi_setup() {
     SPI.setMOSI(SPI_MOSI_pin);
@@ -24,7 +24,7 @@ void spi_setup() {
     SPI_EXP.setSCLK(AUX_SCK_pin);
     SPI_EXP.setSSEL(AUX_CS_pin);
     SPI_EXP.begin(AUX_CS_pin);
-#endif
+#endif // EXP_SPI
 }
 
 enum SPIDeviceSelect_t {
@@ -54,14 +54,14 @@ void spi_select(SPIDeviceSelect_t device = SPI_None) {
         case SPI_Flash: digitalWrite(FLASH_CS_pin, LOW); break;
         default: break;
     }
-#endif
-    }
+#endif // SPI_IS_SHARED
+}
 
 void spi_select_exp(SPIDeviceSelect_t device = SPI_None) {
 #ifdef SPI_IS_SHARED
     return spi_select(device);
-#else
+#else // Expansion is on SPI1 while Ethernet and Flash are on SPI2
     if (device != SPI_Expansion) digitalWrite(AUX_CS_pin, HIGH);
     else digitalWrite(AUX_CS_pin, LOW);
-#endif
+#endif // SPI_IS_SHARED
 }

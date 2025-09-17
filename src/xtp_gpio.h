@@ -1,6 +1,9 @@
 #pragma once
 
 #include "xtp_config.h"
+#include "xtp_dma.h"
+
+void gpio_custom_init(void);
 
 
 
@@ -31,12 +34,18 @@ void gpio_setup() {
     pinMode(OUTPUT_2_pin, OUTPUT);
     pinMode(OUTPUT_3_pin, OUTPUT);
 
+    
+#ifdef XTP_ADC_DMA // High-speed ADC with DMA
+    ___XTP_initADC_DMA();
+#else // Generic Arduino ADC
     pinMode(ANALOG_0_pin, INPUT_ANALOG);
     pinMode(ANALOG_1_pin, INPUT_ANALOG);
     pinMode(ANALOG_2_pin, INPUT_ANALOG);
     pinMode(ANALOG_3_pin, INPUT_ANALOG);
     pinMode(ANALOG_4_pin, INPUT_ANALOG);
     pinMode(ANALOG_5_pin, INPUT_ANALOG);
+    pinMode(ANALOG_24V_pin, INPUT_ANALOG);
+#endif // XTP_ADC_DMA
 
     // pinMode(MISC_0_pin, INPUT);
     // pinMode(MISC_1_pin, INPUT);
@@ -45,7 +54,10 @@ void gpio_setup() {
     // pinMode(MISC_4_pin, INPUT);
     // pinMode(MISC_5_pin, INPUT);
 
-    pinMode(ANALOG_24V_pin, INPUT_ANALOG);
+    
+#ifdef XTP_GPIO_CUSTOM_INIT_FUNCTION
+    gpio_custom_init();
+#endif
 
 }
 
