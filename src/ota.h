@@ -5,6 +5,9 @@
 
 // #include "OTAStorage.h"
 #ifndef OTA_CLASSIC
+#ifndef XTP_NO_BROADCAST
+#define NOTA_BROADCAST
+#endif // XTP_NO_BROADCAST
 #include <NOTA.h>
 #endif // OTA_CLASSIC
 
