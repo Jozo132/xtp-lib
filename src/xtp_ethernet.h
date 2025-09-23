@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <Ethernet.h>
 #include <EthernetUDP.h>
+#include <utility/w5100.h>
 
 #include "xtp_config.h"
 #include "xtp_oled.h"
@@ -29,6 +30,45 @@ char writeBuffer[UDP_RX_PACKET_MAX_SIZE + 25];  // a string to send back
 
 Timeout communication_idle(60000);
 
+uint32_t ethernet_last_hard_reset = 0;
+uint32_t ethernet_last_soft_reset = 0;
+
+void w5500_hard_reset() {
+    uint32_t t = millis();
+    if (ethernet_last_hard_reset != 0 && t - ethernet_last_hard_reset < 60000) {
+        return;
+    }
+    ethernet_last_hard_reset = t;
+    sprintf(msg, "  HARD RESET   ");
+    oled_print(msg, 1, 6);
+    pinMode(ETH_RST_pin, OUTPUT);
+    digitalWrite(ETH_RST_pin, LOW);
+    delay(2);
+    digitalWrite(ETH_RST_pin, HIGH);
+    delay(1500);
+    pinMode(ETH_RST_pin, INPUT);
+}
+
+void w5500_soft_reset() {
+    uint32_t t = millis();
+    if (ethernet_last_soft_reset != 0 && t - ethernet_last_soft_reset < 60000) {
+        return;
+    }
+    ethernet_last_soft_reset = t;
+    sprintf(msg, "  SOFT RESET   ");
+    oled_print(msg, 1, 6);
+    int count = 0;
+    W5100.writeMR(0x80);                 // set RST bit
+    while (W5100.readMR() & 0x80) {      // wait until cleared or timeout
+        delay(1);
+        count++;
+        if (count > 1000) {
+            break;
+        }
+    }
+    delay(1500);
+}
+
 
 //EthernetUDP server; // UDP server port
 EthernetServer server(local_port);  // TCP server port
@@ -40,42 +80,62 @@ uint32_t ethernet_cycle = 0;
 bool ethernet_link_established = true;
 int ethernet_link_status = 0;
 bool ethernet_is_connected();
-
+void ota_reconnect();
 char ip_address[20];
 char mac_address[18];
 
 void update_ip_status() {
     // Print IP address local_ip with padEnd filled with spaces
     if (ethernet_link_status == LinkON) {
-        sprintf(msg, "   %s", ip_address);
+        sprintf(msg, "  %s", ip_address);
     } else if (ethernet_link_status == LinkOFF) {
-        sprintf(msg, "    Disconnected");
+        sprintf(msg, "   Disconnected");
     } else { // Unknown
-        sprintf(msg, "       ??????   ");
+        sprintf(msg, "      ??????   ");
     }
     int len = strlen(msg);
-    for (len; len < 20; len++) {
+    for (len; len < 19; len++) {
         msg[len] = ' ';
     }
     msg[len] = 0;
-    oled_print(msg, 0, 6);
+    oled_print(msg, 1, 6);
 }
 
+int ethernet_anomaly_count_A = 0;
+int ethernet_anomaly_count_B = 0;
 void ethernet_init() {
     spi_select(SPI_None);
     ethernet_cycle++;
     Ethernet.init(ETH_CS_pin);
     bool status = ethernet_is_connected();
-    if (!status) {
-        // if (ethernet_cycle % 100 == 0) {
-        if (ethernet_link_status == Unknown) {
-            pinMode(ETH_RST_pin, OUTPUT);
-            digitalWrite(ETH_RST_pin, LOW);
-            delay(1);
-            digitalWrite(ETH_RST_pin, HIGH);
-            pinMode(ETH_RST_pin, INPUT);
-            delay(100);
+    if (status && ethernet_link_status == LinkOFF) {
+        ethernet_anomaly_count_A++;
+        if (ethernet_anomaly_count_A >= 3000) {
+            ethernet_anomaly_count_A = 0;
+            Serial.println("Ethernet link anomaly detected, performing hard reset");
+            w5500_hard_reset();
+            delay(1000);
+            status = ethernet_is_connected();
+        } else {
+            ethernet_anomaly_count_A = 0;
         }
+    }
+    if (local_ip[0] == 0 && local_ip[1] == 0 && local_ip[2] == 0 && local_ip[3] == 0 && ethernet_link_established) {
+        ethernet_anomaly_count_B++;
+        if (ethernet_anomaly_count_B >= 3000) {
+            ethernet_anomaly_count_B = 0;
+            ethernet_link_established = false;
+            w5500_hard_reset();
+            delay(1000);
+            ethernet_is_connected();
+            update_ip_status();
+            return;
+        } else {
+            ethernet_anomaly_count_B = 0;
+        }
+    }
+    if (!status) {
+        w5500_hard_reset();
         ethernet_link_established = false;
         if (ethernet_cycle == 1) displayMsg("                  ");
         update_ip_status();
@@ -140,11 +200,13 @@ void ethernet_init() {
     server.begin();
     delay(10);
     update_ip_status();
+    ota_reconnect();
 }
 
 bool ethernet_is_connected() {
     spi_select(SPI_Ethernet);
     ethernet_link_status = Ethernet.linkStatus();
+    sprintf(ip_address, "%d.%d.%d.%d", local_ip[0], local_ip[1], local_ip[2], local_ip[3]);
     if (ethernet_link_status != LinkON) {
         if (ethernet_link_established) {
             Serial.println("Ethernet link is OFF");
@@ -276,16 +338,65 @@ bool sendMessage(const char* host, uint16_t port, char* message) {
     }
 }
 
+TON ip_null_timeout(60000);
+uint32_t ethernet_loop_time = 0;
+int link_toggle_times[4] = { 0, 0, 0, 0 };
+constexpr int max_link_toggles = sizeof(link_toggle_times) / sizeof(link_toggle_times[0]);
+int link_toggle_index = 0;
+bool link_toggle_state = false;
+uint32_t link_toggle_time = 0;
 
 void ethernet_loop() {
     spi_select(SPI_Ethernet);
 
+    uint32_t t = millis();
+    int32_t dt = t - ethernet_loop_time;
+    if (dt < 1) dt = 1;
+    ethernet_loop_time = t;
+
     // Try to re-establish ethernet connection if it is lost
-    if (ethernet_is_connected() && !ethernet_link_established) {
+    bool connected = ethernet_is_connected();
+    bool connection_restored = connected && !ethernet_link_established;
+
+    bool undefined_state = ethernet_link_status == Unknown;
+
+    bool ip_is_null = local_ip[0] == 0 && local_ip[1] == 0 && local_ip[2] == 0 && local_ip[3] == 0;
+
+    bool ip_is_null_for_too_long = ip_null_timeout.update(ip_is_null, dt);
+
+    // uint8_t w5500_reg = W5100.readPHYCFGR_W5500();
+    // bool link_led = (w5500_reg & 0x01) != 0;
+    bool link_led = ethernet_link_status == LinkON;
+
+    if (link_led != link_toggle_state) {
+        link_toggle_state = link_led;
+        link_toggle_times[link_toggle_index] = t;
+        link_toggle_index = (link_toggle_index + 1) % max_link_toggles;
+    }
+    if (link_toggle_index == 0) {
+        // If the duration between each pair of toggles is less than 5 seconds, do a hard reset
+        bool too_many_toggles = true;
+        for (int i = 0; i < max_link_toggles - 2; i++) {
+            int j = i + 1;
+            int diff = link_toggle_times[j] - link_toggle_times[i];
+            if (diff > 5000) {
+                too_many_toggles = false;
+                break;
+            }
+        }
+        if (too_many_toggles) {
+            w5500_hard_reset();
+        }
+    }
+
+
+    if (connection_restored || undefined_state || ip_is_null_for_too_long) {
         ethernet_init();
     } else {
         update_ip_status();
     }
+
+    if (connected) Ethernet.maintain();
 
     spi_select(SPI_None);
 }
