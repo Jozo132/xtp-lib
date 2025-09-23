@@ -26,11 +26,11 @@ public:
 class TON : IECTimer {
 public:
     TON(uint32_t T) { reset(T); }
-    bool update(bool IN) {
+    bool update(bool IN, uint32_t elapsed = 0) {
         this->IN = IN;
         if (IN) {
             if (this->ET < this->T)
-                this->ET += _iec_ms;
+                this->ET += elapsed > 0 ? elapsed : _iec_ms;
             else
                 this->OUT = true;
         } else {
@@ -44,14 +44,14 @@ public:
 class TOF : IECTimer {
 public:
     TOF(uint32_t T) { reset(T); }
-    bool update(bool IN) {
+    bool update(bool IN, uint32_t elapsed = 0) {
         this->IN = IN;
         if (IN) {
             this->ET = 0;
             this->OUT = false;
         } else {
             if (this->ET < this->T)
-                this->ET += _iec_ms;
+                this->ET += elapsed > 0 ? elapsed : _iec_ms;
             else
                 this->OUT = true;
         }
