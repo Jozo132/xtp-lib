@@ -62,8 +62,9 @@ void xtp_setup() {
 }
 
 void xtp_loop() {
-    // IntervalGlobalLoopCheck();
-    IWatchdog.reload();
-    ethernet_loop();
-    ota_loop();
+  // IntervalGlobalLoopCheck();
+  IWatchdog.reload();
+  ethernet_loop();
+  ota_loop();
+  oled_ticker();
 }

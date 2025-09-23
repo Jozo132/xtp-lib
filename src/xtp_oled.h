@@ -92,3 +92,90 @@ void oled_print(const char* msg, int x, int y) {
     oled_draw();
 #endif
 }
+
+
+int xtp_spinner_index = 0;
+void oled_ticker() {
+#ifndef DISABLE_OLED
+#ifdef XTP_DISPLAY_TICK
+    constexpr int spinner_count = 8;
+    int t = millis();
+    int spinner_index = (t % (spinner_count * 30) / 30); // Each frame lasts 30ms at most
+    if (spinner_index != xtp_spinner_index) { // Ob frame changed
+        xtp_spinner_index = spinner_index;
+        const uint8_t backslash_bitmap [][6] = {
+          {
+            0b00000100,
+            0b00001010,
+            0b00010000,
+            0b10100000,
+            0b01000000,
+            0b00000000
+          },
+          {
+            0b00001100,
+            0b00010000,
+            0b00010000,
+            0b00010000,
+            0b01100000,
+            0b00000000
+          },
+          {
+            0b00011000,
+            0b00010000,
+            0b00010000,
+            0b00010000,
+            0b00110000,
+            0b00000000
+          },
+          {
+            0b00110000,
+            0b00010000,
+            0b00010000,
+            0b00010000,
+            0b00011000,
+            0b00000000
+          },
+          {
+            0b01100000,
+            0b00100000,
+            0b00010000,
+            0b00001000,
+            0b00001100,
+            0b00000000
+          },
+          {
+            0b01000000,
+            0b01000000,
+            0b00111000,
+            0b00000100,
+            0b00000100,
+            0b00000000
+          },
+          {
+            0b00000000,
+            0b01000000,
+            0b01111100,
+            0b00000100,
+            0b00000000,
+            0b00000000
+          },
+          {
+            0b00000000,
+            0b00000100,
+            0b01111100,
+            0b01000000,
+            0b00000000,
+            0b00000000
+          }
+        };
+        const uint8_t* bitmap = &backslash_bitmap[xtp_spinner_index][0];
+        int x = 0;
+        int y = 6; // row 6
+        int w = 6;
+        int h = 1 * 8; // 1 row = 8 pixels
+        ssd1306_drawBuffer(x, y, w, h, bitmap);
+    }
+#endif // XTP_DISPLAY_TICK
+#endif // DISABLE_OLED
+}
