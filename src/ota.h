@@ -4,13 +4,10 @@
 #include "xtp-lib.h"
 
 // #include "OTAStorage.h"
-#ifndef OTA_CLASSIC
 #ifndef XTP_NO_BROADCAST
 #define NOTA_BROADCAST
 #endif // XTP_NO_BROADCAST
 #include <NOTA.h>
-#endif // OTA_CLASSIC
-
 
 #ifndef OTA_NAME
 #define OTA_NAME "XTP"
@@ -40,9 +37,6 @@ int prev_progress = 999;
 void ota_setup() {
 
     uint16_t port = OTA_PORT;
-#ifdef OTA_CLASSIC
-    ArduinoOTA.begin(Ethernet.localIP(), OTA_NAME, ota_password, InternalStorage);
-#else // NOTA
 
     // ota_storage.init();
     // OTA.setStorage(ota_storage);
@@ -118,13 +112,12 @@ void ota_setup() {
 
     int32_t max_size = InternalStorage.maxSize();
     Serial.printf("OTA server started on port %u - max_size: %d\n", port, max_size);
-#endif // OTA_CLASSIC
+}
+
+void ota_reconnect() {
+    OTA.reconnect(); // force re-init
 }
 
 void ota_loop() {
-#ifdef OTA_CLASSIC
-    ArduinoOTA.poll();
-#else // NOTA
     OTA.handle();
-#endif // OTA_CLASSIC
 }
