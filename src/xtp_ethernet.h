@@ -200,7 +200,7 @@ void ethernet_init() {
     server.begin();
     delay(10);
     update_ip_status();
-    ota_reconnect();
+    if (ethernet_cycle > 1) ota_reconnect();
 }
 
 bool ethernet_is_connected() {
