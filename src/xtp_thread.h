@@ -37,6 +37,7 @@ void thread_setup(uint32_t period_us, thread_handle_t handler = nullptr) {
     _thread_Timer.attachInterrupt(thread_loop);
     _thread_Timer.refresh();
     _thread_Timer.resume();
+    _thread_Timer.setInterruptPriority(15, 0);      // lowest for TIM2
 }
 
 void thread_pause() {
