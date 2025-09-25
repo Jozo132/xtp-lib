@@ -223,7 +223,10 @@ bool ethernet_is_connected() {
     return true;
 }
 
+bool ethernet_has_initialized = false;
 void ethernet_setup() {
+    if (ethernet_has_initialized) return;
+    ethernet_has_initialized = true;
     oled_print("Starting up ... ", 0, 0);
     // getDeviceUUID(); // Get 12 byte UUID array
 

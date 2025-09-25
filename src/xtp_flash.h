@@ -9,8 +9,6 @@
 
 SPIFlash flash(FLASH_CS_pin);
 
-bool flash_initialized = false;
-
 void flash_print_info();
 
 uint8_t _flash_retain_image[RETAINED_DATA_SIZE];
@@ -18,7 +16,9 @@ uint8_t _flash_retain_image[RETAINED_DATA_SIZE];
 void _flash_write(bool force = false);
 void _flash_read();
 
+bool flash_initialized = false;
 void flash_setup() {
+    if (flash_initialized) return;
     spi_select(SPI_Flash);
     flash.begin();
     if (flash.error()) {

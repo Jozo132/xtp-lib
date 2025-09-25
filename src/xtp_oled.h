@@ -12,7 +12,9 @@ char _oled_data_active[OLED_CHARS + 1] = { 0 };
 char _oled_data_new[OLED_CHARS + 1] = { 0 };
 char _oled_toDraw[OLED_CHARS + 1] = { 0 };
 
+bool oled_initialized = false;
 void oled_setup() {
+    oled_initialized = true;
 #ifndef DISABLE_OLED
     ssd1306_setFixedFont(ssd1306xled_font6x8);
     ssd1306_128x64_i2c_init();
@@ -27,6 +29,7 @@ void oled_setup() {
 bool oled_force_redraw = false;
 void oled_draw() {
 #ifndef DISABLE_OLED
+    if (!oled_initialized) return;
     uint32_t t = micros();
     if (oled_force_redraw) {
         oled_force_redraw = false;
@@ -70,6 +73,7 @@ void oled_draw() {
 
 void displayMsg(const char* msg) {
 #ifndef DISABLE_OLED
+    if (!oled_initialized) return;
     int len = strlen(msg);
     for (int i = 0; i < len; i++) {
         if (i >= OLED_CHARS) break;
@@ -83,6 +87,7 @@ void displayMsg(const char* msg) {
 
 void oled_print(const char* msg, int x, int y) {
 #ifndef DISABLE_OLED
+    if (!oled_initialized) return;
     int len = strlen(msg);
     int index = x + y * OLED_COLS;
     for (int i = 0; i < len; i++) {
@@ -98,6 +103,7 @@ int xtp_spinner_index = 0;
 void oled_ticker() {
 #ifndef DISABLE_OLED
 #ifdef XTP_DISPLAY_TICK
+    if (!oled_initialized) return;
     constexpr int spinner_count = 8;
     int t = millis();
     int spinner_index = (t % (spinner_count * 30) / 30); // Each frame lasts 30ms at most

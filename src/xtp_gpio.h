@@ -7,7 +7,10 @@ void gpio_custom_init(void);
 
 
 
+bool gpio_setup_done = false;
 void gpio_setup() {
+    if (gpio_setup_done) return;
+    gpio_setup_done = true;
     analogReadResolution(12);
 
     pinMode(LED_BUILTIN, OUTPUT);
@@ -34,7 +37,7 @@ void gpio_setup() {
     pinMode(OUTPUT_2_pin, OUTPUT);
     pinMode(OUTPUT_3_pin, OUTPUT);
 
-    
+
 #ifdef XTP_ADC_DMA // High-speed ADC with DMA
     ___XTP_initADC_DMA();
 #else // Generic Arduino ADC
@@ -54,7 +57,7 @@ void gpio_setup() {
     // pinMode(MISC_4_pin, INPUT);
     // pinMode(MISC_5_pin, INPUT);
 
-    
+
 #ifdef XTP_GPIO_CUSTOM_INIT_FUNCTION
     gpio_custom_init();
 #endif

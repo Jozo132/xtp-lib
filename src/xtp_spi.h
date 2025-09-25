@@ -12,8 +12,10 @@
 #define EXP_SPI
 SPIClass SPI_EXP;
 #endif // AUX SPI pins defined -> enable EXP_SPI
-
+bool spi_initialized = false;
 void spi_setup() {
+    if (spi_initialized) return;
+    spi_initialized = true;
     SPI.setMOSI(SPI_MOSI_pin);
     SPI.setMISO(SPI_MISO_pin);
     SPI.setSCLK(SPI_SCK_pin);

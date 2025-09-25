@@ -34,7 +34,10 @@ void (*rest_setup)() = nullptr;
  *  });
 **/
 
+bool xtp_rest_routing_initialized = false;
 void rest_routing() {
+    if (xtp_rest_routing_initialized) return;
+    xtp_rest_routing_initialized = true;
 
     // Remap root to index.html
     rest.remap("/", "/index.html");
@@ -48,7 +51,10 @@ void rest_routing() {
     rest.onNotFound([]() { rest.send(404, "text/plain", "Ta stran ne obstaja!"); });
 }
 
+bool web_server_initialized = false;
 void web_server_setup() {
+    if (web_server_initialized) return;
+    web_server_initialized = true;
 #ifdef USE_REST_API_SERVER
     char project_name[64] = { 0 };
     getFileNameFromPath(project_path, project_name, 64);

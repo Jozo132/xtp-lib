@@ -4,7 +4,10 @@
 
 #include <Wire.h>
 
+bool i2c_initialized = false;
 void i2c_setup() {
+    if (i2c_initialized) return;
+    i2c_initialized = true;
     Wire.setSDA(I2C_SDA_pin);
     Wire.setSCL(I2C_SCL_pin);
     Wire.setClock(I2C_CLOCK);
