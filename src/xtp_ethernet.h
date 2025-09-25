@@ -401,5 +401,9 @@ void ethernet_loop() {
 
     if (connected) Ethernet.maintain();
 
+#ifdef USE_REST_API_SERVER
+    web_server_loop();
+#endif // USE_REST_API_SERVER
+
     spi_select(SPI_None);
 }

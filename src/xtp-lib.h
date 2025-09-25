@@ -58,6 +58,8 @@ void xtp_setup() {
   ethernet_setup();
   ota_shutdown = []() { thread_pause(); };
   ota_setup();
+  
+  web_server_setup();
   IWatchdog.reload();
 }
 
