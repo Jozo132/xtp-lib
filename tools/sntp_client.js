@@ -9,6 +9,7 @@ const client = dgram.createSocket('udp4')
 const host = 'localhost'
 const port = 123
 
+/** @param { Buffer } msg */
 const sntp_decode = msg => {
     const packet = new Uint8Array(msg)
     if (!(packet[0] & 0b11000000 || packet[0] & 0b00100100)) {

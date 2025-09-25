@@ -17,9 +17,11 @@ class SNTP {
         this.server = server
     }
 
+    /** @param { number } port */
     start(port) { this.server.bind(port || this.#port) }
     stop() { this.server.close() }
 
+    /** @param { Buffer } msg @param { dgram.RemoteInfo } rinfo */
     #onMessage(msg, rinfo) {
         const source = `${rinfo.address}:${rinfo.port}`
         // Parse SNTP packet
@@ -42,8 +44,10 @@ class SNTP {
             if (err) console.error(err)
         })
     }
-
+    /** @param { string } event @param { (...args: any[]) => void } cb */
     on(event, cb) { this.server.on(event, cb) }
+
+    /** @param { string } event @param { (...args: any[]) => void } cb */
     off(event, cb) { this.server.off(event, cb) }
     close() { this.server.close() }
 }
