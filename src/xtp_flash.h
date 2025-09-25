@@ -36,6 +36,7 @@ void flash_setup() {
     if (retainedData.reboot_count == -1) {
         Serial.println("FLASH retained data not found. Writing default data");
         memcpy(&retainedData, &retainedDataDefault, RETAINED_DATA_SIZE);
+        snprintf(retainedData.name, sizeof(retainedData.name), DEVICE_NAME "-%02X%02X%02X%02X%02X", MCU_UID[6], MCU_UID[5], MCU_UID[4], MCU_UID[2], MCU_UID[0]);
         _flash_write();
     } else {
         retainedData.reboot_count++;
