@@ -57,7 +57,7 @@ public:
     int _remaps_count = 0;
 
     RestServer(EthernetServer& server) { this->server = &server; }
-    void begin() { }
+    void begin() {}
 
     void on(const char* uri, HTTPMethod method, EndpointHandler handler) {
         if (_endpoints_count >= HTTP_MAX_ENDPOINTS) return; // max endpoints (for now)
@@ -460,5 +460,14 @@ public:
             if (startsWith(name_existing, name, true)) return _files[i];
         }
         return NULL;
+    }
+
+    void handleGetFile(RestServer& rest, const char* file_name) {
+        MyFile* file = this->getFile(file_name);
+        if (file == NULL) {
+            rest.send(404, "File Not Found");
+            return;
+        }
+        rest.send(200, file_content_type(file_name), file->data(), file->length());
     }
 };

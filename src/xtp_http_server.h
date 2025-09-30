@@ -5,6 +5,8 @@
 RestServer rest(server);
 MyFileSystem files; // Todo: add implementation
 
+#define REST_SERVE_FILE(name, data, length) files.addFile(name, data, length); rest.get(name, []() { files.handleGetFile(rest, name); });
+
 char project_info[512] = { 0 };
 char rest_response_basic[512] = "";
 
@@ -35,7 +37,7 @@ void (*rest_setup)() = nullptr;
 **/
 
 bool xtp_rest_routing_initialized = false;
-void rest_routing() {
+void xtp_rest_routing() {
     if (xtp_rest_routing_initialized) return;
     xtp_rest_routing_initialized = true;
 
@@ -61,7 +63,7 @@ void web_server_setup() {
     sprintf(project_info, "Project: %s\nBuild: %s\nCompiled: %s %s", project_name, build_number, project_date, project_time);
 
     //route_files(); // Boundled front-end files
-    rest_routing();
+    xtp_rest_routing();
     Serial.println("HTTP rest server started");
 #endif
 }

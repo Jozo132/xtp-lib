@@ -197,6 +197,9 @@
 
 char DEFAULT_DEVICE_NAME[32] = DEVICE_NAME;
 
+class RestServer;
+class MyFileSystem;
+
 
 DynamicJsonDocument json_buffer(8192);
 char json_buffer_str[8192];
@@ -207,3 +210,6 @@ byte local_ip[4];
 
 
 char msg[256];
+
+
+void web_server_loop();

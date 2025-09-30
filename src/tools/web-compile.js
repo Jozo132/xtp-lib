@@ -77,14 +77,13 @@ const generate_http_server_file_hosting = (name, input_data) => {
     // const uint32_t file_1_size = 10;
     // const uint8_t file_1 [file_1_size + 1] PROGMEM = { 0x00, 0x01, ... }; // Buffer
     // const uint8_t file_1 [file_1_size + 1] PROGMEM = "01..."; // String
-    // files.addFile("Test file", file_1_size, file_1);
+    // REST_SERVE_FILE("Test file", file_1_size, file_1);
     const isString = typeof input_data === 'string'
     const size = `const int32_t __file_${file_index}_size = ${isString ? -1 : input_data.length};` // @ts-ignore
     const data = `const char __file_${file_index}[${isString ? '' : `__file_${file_index}_size + 1`}] PROGMEM = ${isString ? (input_data.startsWith('"') ? input_data : JSON.stringify(input_data)) : `{ ${input_data.join(', ')} }`};`
-    const setup = `files.addFile("${name}", __file_${file_index}, __file_${file_index}_size);`
-    const handle = `rest.get("${name}", []() { handle_GET_FILE("${name}"); });`
+    const setup = `REST_SERVE_FILE("${name}", __file_${file_index}, __file_${file_index}_size);`
     file_index++;
-    return { size, data, setup, handle }
+    return { size, data, setup }
 }
 
 // ###############################################################################################
@@ -197,7 +196,7 @@ const main = async () => {
     const results = []
 
     // Delete folder build_directory recursively if it exists
-    if (fs.existsSync(`./${build_directory}`)) fs.rmdirSync(`./${build_directory}`, { recursive: true })
+    if (fs.existsSync(`./${build_directory}`)) fs.rmSync(`./${build_directory}`, { recursive: true })
 
     console.log(`Processing ${files.length} files ...`)
 
@@ -226,16 +225,15 @@ const main = async () => {
         results.push([target_file_path, file_size, !compress_type || compress_success]) // [file_path, file_size, success]
         global_definitions.push('')
         global_definitions.push(`// Expected size: ${(file_size + '').padStart(8, ' ')} bytes - ${target_file_path} ${compress_type ? `(minified ${compress_type} from ${original_size} bytes ${compress_success ? `-> reduced by ${(rate > 0 ? '-' : '+') + (rate).toFixed(1)}% )` : `failed to compress, please read the README file for information)`}` : ''}`)
-        const { size, data, setup, handle } = generate_http_server_file_hosting(target_file_path, output)
+        const { size, data, setup } = generate_http_server_file_hosting(target_file_path, output)
 
         // const uint32_t file_1_size = 10;
         // const uint8_t file_1 [file_1_size] PROGMEM = { '1', '2', '3', '4', '5', '6', '7', '8', '9', '0' };
-        // files.addFile("Test file", file_1_size, file_1);
+        // REST_SERVE_FILE("Test file", file_1_size, file_1);
 
         global_definitions.push(size)
         global_definitions.push(data)
         definition_linking.push(`    ${setup}`)
-        file_handling.push(`    ${handle}`)
         // Also store the file in the output directory for SPIFFS at "./build_directory/<file_path>"
         if (compress_type) await saveFile(`${build_directory}${target_file_path}`, output)
         // Copy original file to the output directory for SPIFFS at "./build_directory/<file_path>"
@@ -260,9 +258,6 @@ const main = async () => {
     rows.push('')
     rows.push(`void ${setup_function_name}() {`)
     for (let i = 0; i < definition_linking.length; i++) rows.push(definition_linking[i])
-    rows.push('')
-    for (let i = 0; i < file_handling.length; i++) rows.push(file_handling[i])
-
     rows.push(`}`)
     rows.push(``)
     rows.push(`#endif // __www_output_h__`)
