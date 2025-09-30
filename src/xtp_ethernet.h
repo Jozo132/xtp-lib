@@ -33,42 +33,41 @@ Timeout communication_idle(60000);
 uint32_t ethernet_last_hard_reset = 0;
 uint32_t ethernet_last_soft_reset = 0;
 
-void w5500_hard_reset() {
-    uint32_t t = millis();
-    if (ethernet_last_hard_reset != 0 && t - ethernet_last_hard_reset < 60000) {
-        return;
-    }
-    ethernet_last_hard_reset = t;
-    sprintf(msg, "  HARD RESET   ");
-    oled_print(msg, 1, 6);
-    pinMode(ETH_RST_pin, OUTPUT);
-    digitalWrite(ETH_RST_pin, LOW);
-    delay(2);
-    digitalWrite(ETH_RST_pin, HIGH);
-    delay(1500);
-    pinMode(ETH_RST_pin, INPUT);
-}
 
-void w5500_soft_reset() {
+void w5500_soft_reset(bool force = false) {
     uint32_t t = millis();
-    if (ethernet_last_soft_reset != 0 && t - ethernet_last_soft_reset < 60000) {
-        return;
-    }
-    ethernet_last_soft_reset = t;
-    sprintf(msg, "  SOFT RESET   ");
-    oled_print(msg, 1, 6);
-    int count = 0;
-    W5100.writeMR(0x80);                 // set RST bit
-    while (W5100.readMR() & 0x80) {      // wait until cleared or timeout
-        delay(1);
-        count++;
-        if (count > 1000) {
-            break;
+    uint32_t elapsed = t - ethernet_last_soft_reset;
+    if (elapsed >= 45000 || force) {
+        ethernet_last_soft_reset = t;
+        sprintf(msg, "  SOFT RESET   ");
+        oled_print(msg, 1, 6);
+        int count = 0;
+        W5100.writeMR(0x80);                 // set RST bit
+        while (W5100.readMR() & 0x80) {      // wait until cleared or timeout
+            delay(1);
+            count++;
+            if (count > 1000) {
+                break;
+            }
         }
+        delay(100);
     }
-    delay(1500);
 }
 
+void w5500_hard_reset(bool force = false) {
+    uint32_t t = millis();
+    uint32_t elapsed = t - ethernet_last_hard_reset;
+    if (elapsed >= 90000 || force) {
+        ethernet_last_hard_reset = t;
+        sprintf(msg, "  HARD RESET   ");
+        oled_print(msg, 1, 6);
+        digitalWrite(ETH_RST_pin, LOW);
+        delay(5);
+        digitalWrite(ETH_RST_pin, HIGH);
+        delay(2500);
+    }
+    w5500_soft_reset();
+}
 
 //EthernetUDP server; // UDP server port
 EthernetServer server(local_port);  // TCP server port
@@ -341,7 +340,7 @@ bool sendMessage(const char* host, uint16_t port, char* message) {
     }
 }
 
-TON ip_null_timeout(60000);
+TON ip_null_timeout(120000);
 uint32_t ethernet_loop_time = 0;
 int link_toggle_times[4] = { 0, 0, 0, 0 };
 constexpr int max_link_toggles = sizeof(link_toggle_times) / sizeof(link_toggle_times[0]);
@@ -394,6 +393,10 @@ void ethernet_loop() {
 
 
     if (connection_restored || undefined_state || ip_is_null_for_too_long) {
+        if (undefined_state || ip_is_null_for_too_long) {
+            w5500_hard_reset(true);
+            ip_null_timeout.update(false, dt);
+        }
         ethernet_init();
     } else {
         update_ip_status();
