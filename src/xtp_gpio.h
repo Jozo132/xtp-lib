@@ -150,5 +150,5 @@ constexpr float _voltageRatio = (vin_adc_r1 + vin_adc_r2) / vin_adc_r2 * 3.3 / 4
 
 float readVoltage() {
     // return ((float) analogRead(ANALOG_24V_pin)) * _voltageRatio;
-    return analogRead(ANALOG_24V_pin);
+    return xtpAnalogRead(ANALOG_24V_pin);
 }
