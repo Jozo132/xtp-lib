@@ -184,6 +184,22 @@
 #define UART_BAUDRATE   115200
 #endif // UART_BAUDRATE
 
+#ifndef ETH_SPI_SPEED
+#if defined(XTP_12A6_E)
+#define ETH_SPI_SPEED   16000000
+#else // XTP_14A6_E
+#define ETH_SPI_SPEED   32000000
+#endif // XTP_12A6_E
+#endif // ETH_SPI_SPEED
+
+#ifndef FLASH_SPI_SPEED
+#define FLASH_SPI_SPEED 32000000
+#endif // FLASH_SPI_SPEED
+
+#ifndef AUX_SPI_SPEED
+#define AUX_SPI_SPEED   10000000
+#endif // AUX_SPI_SPEED
+
 
 #ifndef DEVICE_NAME
 #if defined(XTP_12A6_E)
