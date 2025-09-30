@@ -54,6 +54,8 @@ void gpio_setup() {
     pinMode(OUTPUT_2_pin, OUTPUT);
     pinMode(OUTPUT_3_pin, OUTPUT);
 
+    pinMode(ETH_RST_pin, OUTPUT);
+    digitalWrite(ETH_RST_pin, HIGH);
 
 #ifdef XTP_ADC_DMA // High-speed ADC with DMA
     ___XTP_initADC_DMA();
