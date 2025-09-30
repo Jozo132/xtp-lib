@@ -84,9 +84,9 @@
 #define SPI_MISO_pin    PB14
 #define SPI_MOSI_pin    PB15
 
-#define SPI_EXP_SCK_pin     PB13
-#define SPI_EXP_MISO_pin    PB14
-#define SPI_EXP_MOSI_pin    PB15
+#define AUX_SCK_pin     PB13
+#define AUX_MISO_pin    PB14
+#define AUX_MOSI_pin    PB15
 
 #define I2C_WP_pin      PB3
 
@@ -149,9 +149,9 @@
 #define SPI_MISO_pin        PB14
 #define SPI_MOSI_pin        PB15
 
-#define SPI_EXP_SCK_pin     PA5
-#define SPI_EXP_MISO_pin    PA6
-#define SPI_EXP_MOSI_pin    PA7
+#define AUX_SCK_pin     PA5
+#define AUX_MISO_pin    PA6
+#define AUX_MOSI_pin    PA7
 
 #define I2C_WP_pin          PB3 // not connected
 
@@ -170,9 +170,9 @@
 
 #endif // BOARD
 
-#if (SPI_SCK_pin == SPI_EXP_SCK_pin) 
+#if (SPI_SCK_pin == AUX_SCK_pin) 
 #define SPI_IS_SHARED 
-#endif // SPI_SCK_pin == SPI_EXP_SCK_pin
+#endif // SPI_SCK_pin == AUX_SCK_pin
 
 // ######### PERIPHERAL SETTINGS #########
 
