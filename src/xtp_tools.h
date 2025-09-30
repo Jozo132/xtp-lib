@@ -334,6 +334,19 @@ void hashBytes(const uint8_t* input, const int input_len, uint8_t* output, const
     }
 }
 
+
+void memset32(uint32_t* ptr, uint32_t value, size_t size_in_bytes) {
+    int remaining_bytes = size_in_bytes % 4;
+    size_t size_in_words = size_in_bytes / 4;
+    for (size_t i = 0; i < size_in_words; i++) {
+        ptr[i] = value;
+    }
+    for (size_t i = 0; i < remaining_bytes; i++) {
+        ((uint8_t*) ptr)[i] = (value >> (i * 8)) & 0xFF;
+    }
+}
+
+
 uint8_t DEVICE_UID[4];
 
 bool MCU_UID_loaded = false;
