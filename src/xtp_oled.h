@@ -100,16 +100,19 @@ void oled_print(const char* msg, int x, int y) {
 
 
 int xtp_spinner_index = 0;
+int xtp_spinner_tick = 0;
 void oled_ticker() {
 #ifndef DISABLE_OLED
 #ifdef XTP_DISPLAY_TICK
     if (!oled_initialized) return;
     constexpr int spinner_count = 8;
-    int t = millis();
-    int spinner_index = (t % (spinner_count * 30) / 30); // Each frame lasts 30ms at most
+    constexpr int spinner_frame_duration_ms = 200;
+    if (xtp_spinner_tick >= spinner_count * spinner_frame_duration_ms) xtp_spinner_tick = 0; // Each frame lasts 30ms at most
+    xtp_spinner_tick++;
+    int spinner_index = (xtp_spinner_tick % (spinner_count * spinner_frame_duration_ms) / spinner_frame_duration_ms); // Each frame lasts 30ms at most
     if (spinner_index != xtp_spinner_index) { // Ob frame changed
         xtp_spinner_index = spinner_index;
-        const uint8_t backslash_bitmap [][6] = {
+        const uint8_t sprite [][6] = {
           {
             0b00000100,
             0b00001010,
@@ -175,7 +178,7 @@ void oled_ticker() {
             0b00000000
           }
         };
-        const uint8_t* bitmap = &backslash_bitmap[xtp_spinner_index][0];
+        const uint8_t* bitmap = &sprite[xtp_spinner_index][0];
         int x = 0;
         int y = 6; // row 6
         int w = 6;
