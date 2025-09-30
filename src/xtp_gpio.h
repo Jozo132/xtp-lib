@@ -31,7 +31,11 @@ void gpio_setup() {
     analogReadResolution(12);
 
     pinMode(LED_BUILTIN, OUTPUT);
+#ifdef XTP_14A6_E
+    pinMode(BUTTON_pin, INPUT_PULLDOWN);
+#else // XTP_12A6_E
     pinMode(BUTTON_pin, INPUT);
+#endif // XTP_14A6_E
 
     pinMode(ENC_A_pin, INPUT);
     pinMode(ENC_B_pin, INPUT);
@@ -109,7 +113,7 @@ bool readInput(int pin) {
         case INPUT_7_pin: return (GPIOC->IDR & PX9_MSK) != 0; // PC9
         case INPUT_8_pin: return (GPIOC->IDR & PX8_MSK) != 0; // PC8
         case INPUT_9_pin: return (GPIOC->IDR & PX7_MSK) != 0; // PC7
-        case  BUTTON_pin: return (GPIOB->IDR & PX2_MSK) != 0; // PB2
+        case  BUTTON_pin: return (GPIOD->IDR & PX2_MSK) != 0; // PD2
 #endif
         default: return false;
     }
