@@ -104,6 +104,10 @@ public:
         _cycles = debounce_count > 0 ? debounce_count : _cycles;
     }
 
+    int getCount() {
+        return _cycles;
+    }
+
     bool read() {
         bool input = _pin < 0 ? false : digitalRead(_pin);
         return read(input);
