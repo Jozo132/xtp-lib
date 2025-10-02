@@ -359,7 +359,7 @@ public:
 
 
 
-bool startsWith(const char* line, const char* prefix, bool case_sensitive) {
+bool startsWith(const char* line, const char* prefix, bool case_sensitive = true) {
     int line_len = strlen(line);
     int prefix_len = strlen(prefix);
     if (line_len < prefix_len) return false;
