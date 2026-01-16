@@ -437,70 +437,95 @@ public:
                     return;
                 }
                 
-                // Parse headers and body (with timeout protection)
+                // Parse headers and body (optimized with bulk reads)
                 if (is_get || is_post) {
                     _argc = 0;
-                    uint32_t parse_timeout = t + 100;
-                    while (client.available() && millis() < parse_timeout) {
-                        char line[65];
-                        char c = client.peek();
-                        while (c && (c == ' ' || c == '\r' || c == '\n') && millis() < parse_timeout) {
-                            client.read();
-                            if (!client.available()) break;
-                            c = client.peek();
-                        }
-                        bool isHeader = c >= 'A' && c <= 'Z';
-                        if (!isHeader) break;
-                        
-                        int i = 0;
-                        while (client.available() && millis() < parse_timeout) {
-                            c = client.read();
-                            if (i == 0 && c == ' ') break;
-                            if (c == '\r' || c == '\n' || c == ':') break;
-                            line[i++] = c;
-                            if (i >= 64) break;
-                        }
-                        line[i] = '\0';
-                        int name_len = i;
-                        
-                        if (c == ':') {
-                            char* name = (char*) _args[_argc].name;
-                            char* value = (char*) _args[_argc].value;
-                            for (int j = 0; j < name_len; j++)
-                                name[j] = line[j];
-                            name[name_len] = '\0';
-                            
-                            // Skip unneeded headers
-                            if (strcmp(name, "Accept") == 0 || strcmp(name, "Accept-Encoding") == 0 || 
-                                strcmp(name, "Accept-Language") == 0 || strcmp(name, "Cache-Control") == 0 || 
-                                strcmp(name, "Connection") == 0 || strcmp(name, "DNT") == 0 || 
-                                strcmp(name, "User-Agent") == 0 || strcmp(name, "Upgrade-Insecure-Requests") == 0) {
-                                while (client.available() && millis() < parse_timeout) {
-                                    c = client.read();
-                                    if (c == '\n' || c == '\r') break;
-                                }
-                                continue;
-                            }
-                            
-                            i = 0;
-                            while (client.available() && millis() < parse_timeout) {
-                                c = client.read();
-                                if (c == '\n' || c == '\r') break;
-                                value[i++] = c;
-                                if (i >= 64) break;
-                            }
-                            value[i] = '\0';
-                            _argc++;
-                            if (_argc >= HTTP_MAX_ARGS) break;
-                        }
+                    uint32_t parse_deadline = t + 100;
+                    
+                    // Read all available data into a local buffer for faster parsing
+                    char headerBuf[512];
+                    int headerLen = 0;
+                    int available = client.available();
+                    if (available > 0) {
+                        headerLen = min(available, (int)sizeof(headerBuf) - 1);
+                        client.read((uint8_t*)headerBuf, headerLen);
+                        headerBuf[headerLen] = '\0';
                     }
                     
-                    // Read body
+                    // Parse headers from buffer
+                    int pos = 0;
+                    while (pos < headerLen && _argc < HTTP_MAX_ARGS) {
+                        // Skip whitespace and newlines
+                        while (pos < headerLen && (headerBuf[pos] == ' ' || headerBuf[pos] == '\r' || headerBuf[pos] == '\n')) {
+                            pos++;
+                        }
+                        if (pos >= headerLen) break;
+                        
+                        // Check if it's a header (starts with A-Z)
+                        char c = headerBuf[pos];
+                        bool isHeader = c >= 'A' && c <= 'Z';
+                        if (!isHeader) break;  // End of headers
+                        
+                        // Read header name
+                        int nameStart = pos;
+                        while (pos < headerLen && headerBuf[pos] != ':' && headerBuf[pos] != '\r' && headerBuf[pos] != '\n') {
+                            pos++;
+                        }
+                        int nameLen = pos - nameStart;
+                        if (nameLen > 63) nameLen = 63;
+                        
+                        if (pos < headerLen && headerBuf[pos] == ':') {
+                            pos++;  // Skip ':'
+                            // Skip leading space after colon
+                            while (pos < headerLen && headerBuf[pos] == ' ') pos++;
+                            
+                            // Check if we should skip this header (common unneeded ones)
+                            bool skipHeader = false;
+                            if (nameLen == 6 && strncmp(&headerBuf[nameStart], "Accept", 6) == 0) skipHeader = true;
+                            else if (nameLen == 10 && strncmp(&headerBuf[nameStart], "User-Agent", 10) == 0) skipHeader = true;
+                            else if (nameLen == 10 && strncmp(&headerBuf[nameStart], "Connection", 10) == 0) skipHeader = true;
+                            else if (nameLen == 15 && strncmp(&headerBuf[nameStart], "Accept-Encoding", 15) == 0) skipHeader = true;
+                            else if (nameLen == 15 && strncmp(&headerBuf[nameStart], "Accept-Language", 15) == 0) skipHeader = true;
+                            else if (nameLen == 13 && strncmp(&headerBuf[nameStart], "Cache-Control", 13) == 0) skipHeader = true;
+                            else if (nameLen == 3 && strncmp(&headerBuf[nameStart], "DNT", 3) == 0) skipHeader = true;
+                            
+                            // Read value
+                            int valueStart = pos;
+                            while (pos < headerLen && headerBuf[pos] != '\r' && headerBuf[pos] != '\n') {
+                                pos++;
+                            }
+                            int valueLen = pos - valueStart;
+                            if (valueLen > 63) valueLen = 63;
+                            
+                            if (!skipHeader) {
+                                // Store header
+                                memcpy(_args[_argc].name, &headerBuf[nameStart], nameLen);
+                                _args[_argc].name[nameLen] = '\0';
+                                memcpy(_args[_argc].value, &headerBuf[valueStart], valueLen);
+                                _args[_argc].value[valueLen] = '\0';
+                                _argc++;
+                            }
+                        }
+                        
+                        // Skip to next line
+                        while (pos < headerLen && headerBuf[pos] != '\n') pos++;
+                        if (pos < headerLen) pos++;  // Skip newline
+                    }
+                    
+                    // Read body (remaining data after headers)
                     body_length = 0;
-                    parse_timeout = millis() + 50;
-                    while (client.available() && millis() < parse_timeout) {
-                        if (body_length >= HTTP_MAX_BODY_SIZE) break;
-                        body[body_length++] = client.read();
+                    // Check for body in buffer (after \r\n\r\n)
+                    if (pos < headerLen) {
+                        int remaining = headerLen - pos;
+                        if (remaining > HTTP_MAX_BODY_SIZE) remaining = HTTP_MAX_BODY_SIZE;
+                        memcpy(body, &headerBuf[pos], remaining);
+                        body_length = remaining;
+                    }
+                    // Read any additional body data from socket
+                    uint32_t bodyDeadline = millis() + 20;  // Short timeout for body
+                    while (client.available() && body_length < HTTP_MAX_BODY_SIZE && millis() < bodyDeadline) {
+                        int toRead = min(client.available(), HTTP_MAX_BODY_SIZE - body_length);
+                        body_length += client.read((uint8_t*)&body[body_length], toRead);
                     }
                     body[body_length] = '\0';
                 }
