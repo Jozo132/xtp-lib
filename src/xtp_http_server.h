@@ -38,9 +38,10 @@ void (*rest_setup)() = nullptr;
 
 bool xtp_rest_routing_initialized = false;
 
-// Buffer for socket status JSON response
+// Buffers for JSON responses
 char socket_status_json[512] = "";
 char eth_status_buffer[384] = "";
+char oled_status_buffer[256] = "";
 
 void xtp_rest_routing() {
     if (xtp_rest_routing_initialized) return;
@@ -56,6 +57,12 @@ void xtp_rest_routing() {
     rest.get("/api/network-status", []() {
         ethernet_status_json(eth_status_buffer, sizeof(eth_status_buffer));
         rest.send(200, "application/json", eth_status_buffer);
+    });
+    
+    // OLED status endpoint
+    rest.get("/api/oled-status", []() {
+        oled_status_json(oled_status_buffer, sizeof(oled_status_buffer));
+        rest.send(200, "application/json", oled_status_buffer);
     });
     
     // Diagnostic endpoint for socket status monitoring
@@ -78,6 +85,13 @@ void xtp_rest_routing() {
         sprintf(socket_status_json + offset, "]}");
         
         rest.send(200, "application/json", socket_status_json);
+    });
+    
+    // I2C bus status endpoint
+    rest.get("/api/i2c-status", []() {
+        static char i2c_status_buffer[512];
+        i2c_status_json(i2c_status_buffer, sizeof(i2c_status_buffer));
+        rest.send(200, "application/json", i2c_status_buffer);
     });
 
     // User provided setup function

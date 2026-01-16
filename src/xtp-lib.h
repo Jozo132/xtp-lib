@@ -66,6 +66,7 @@ void xtp_setup() {
 void xtp_loop() {
   // IntervalGlobalLoopCheck();
   IWatchdog.reload();
+  oled_state_machine_update();  // Non-blocking OLED updates
   ethernet_loop();
   ota_loop();
   oled_ticker();
