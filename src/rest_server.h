@@ -19,14 +19,14 @@
 #define HTTP_CLIENT_TIMEOUT_MS 500
 #endif
 
-// Interval to check for stuck sockets (ms)
+// Interval to check for stuck sockets (ms) - reduced for faster cleanup
 #ifndef HTTP_SOCKET_CLEANUP_INTERVAL_MS
-#define HTTP_SOCKET_CLEANUP_INTERVAL_MS 5000
+#define HTTP_SOCKET_CLEANUP_INTERVAL_MS 1000
 #endif
 
 // Maximum time a socket can be in transitional state before forced cleanup (ms)
 #ifndef HTTP_SOCKET_STALE_TIMEOUT_MS
-#define HTTP_SOCKET_STALE_TIMEOUT_MS 10000
+#define HTTP_SOCKET_STALE_TIMEOUT_MS 2000
 #endif
 
 // Cached socket status for efficient monitoring (updated periodically)
@@ -255,15 +255,11 @@ public:
         client = EthernetClient();
     }
     
-    // Safe client stop with verification (non-blocking version)
-    // Initiates close and returns immediately - actual close happens in state machine
+    // Safe client stop - use hard close to immediately free the socket
+    // Graceful TCP close can leave socket in TIME_WAIT for seconds
     void initiateClientClose() {
-        if (client) {
-            // Use non-blocking disconnect instead of client.stop()
-            forceSocketDisconnect();
-        }
-        _state_entered_ms = millis();
-        state = CLOSING;
+        hardCloseSocket();  // Immediate close, no TCP handshake wait
+        state = WAITING;    // Go directly to WAITING, skip CLOSING state
     }
     
     // Force immediate client cleanup (use when we can't wait)
