@@ -317,7 +317,7 @@ void i2c_setup() {
     
     // Set Wire timeout (if supported by the platform)
 #if defined(ARDUINO_ARCH_STM32)
-    Wire.setWireTimeout(I2C_TIMEOUT_MS * 1000, true); // timeout in microseconds, reset on timeout
+    Wire.setTimeout(I2C_TIMEOUT_MS); // timeout in milliseconds
 #endif
     
     i2cBus.initialized = true;
