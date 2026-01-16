@@ -231,7 +231,8 @@ public:
     // Initiates close and returns immediately - actual close happens in state machine
     void initiateClientClose() {
         if (client) {
-            client.flush();
+            // Skip flush - it can block for 200+ms waiting for TCP ACK
+            // The W5500 will handle cleanup when socket closes
             client.stop();
         }
         _state_entered_ms = millis();
@@ -241,7 +242,7 @@ public:
     // Force immediate client cleanup (use when we can't wait)
     void forceClientClose() {
         if (client) {
-            client.flush();
+            // Skip flush - it can block for 200+ms waiting for TCP ACK
             client.stop();
         }
         client = EthernetClient();
@@ -547,11 +548,16 @@ public:
             }
             
             // Verify client is still connected
-            if (!client.connected()) {
-                Serial.println("[HTTP] Client disconnected before processing");
-                forceClientClose();
-                XTP_TIMING_END(XTP_TIME_HTTP_HANDLE);
-                return;
+            {
+                XTP_TIMING_START(XTP_TIME_W5500_STATUS);
+                bool still_connected = client.connected();
+                XTP_TIMING_END(XTP_TIME_W5500_STATUS);
+                if (!still_connected) {
+                    Serial.println("[HTTP] Client disconnected before processing");
+                    forceClientClose();
+                    XTP_TIMING_END(XTP_TIME_HTTP_HANDLE);
+                    return;
+                }
             }
             
             // Find matching endpoint
