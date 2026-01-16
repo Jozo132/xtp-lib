@@ -38,6 +38,7 @@ enum XtpTimingSection {
     XTP_TIME_HTTP_HANDLER,        // HTTP handler execution
     XTP_TIME_HTTP_SEND,           // HTTP response send phase
     XTP_TIME_HTTP_CLOSE,          // Client close phase
+    XTP_TIME_W5500_STATUS,        // client.connected()/available() checks
     XTP_TIME_SOCKET_CLEANUP,      // Socket health check
     XTP_TIME_SOCKET_CACHE,        // Socket status cache update
     XTP_TIME_I2C_RECOVERY,        // I2C bus recovery
@@ -60,6 +61,7 @@ static const char* const XTP_TIMING_NAMES[] = {
     "http_handler",
     "http_send",
     "http_close",
+    "w5500_status",
     "socket_cleanup",
     "socket_cache",
     "i2c_recovery",

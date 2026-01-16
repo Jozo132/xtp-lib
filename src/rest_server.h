@@ -177,7 +177,7 @@ public:
         uint8_t stuck_sockets = 0;
         
         for (uint8_t sock = 0; sock < 8; sock++) {
-            uint8_t status = cyclic_sock_status(sock); //W5100.readSnSR(sock);
+            uint8_t status = cyclic_sock_status(sock);
             uint16_t port = cyclic_sock_port(sock);
             
             // Track socket state transitions
@@ -202,37 +202,29 @@ public:
                                     status == 0x1D);  // LAST_ACK
             
             if (is_transitional && socket_age > HTTP_SOCKET_STALE_TIMEOUT_MS) {
-                Serial.printf("[HTTP] Socket %d stuck in %s for %lu ms, forcing close\n", 
-                              sock, getSocketStatusName(status), socket_age);
                 forceCloseSocket(sock);
                 stuck_sockets++;
             }
             
-            // Also cleanup ESTABLISHED sockets that have been idle too long
-            // (could indicate a client that connected but never sent data)
-            if (status == 0x17 && socket_age > HTTP_SOCKET_STALE_TIMEOUT_MS * 2) {
-                // Check if this is the server's accepted socket with no data
-                uint16_t rx_size = W5100.readSnRX_RSR(sock);
-                if (rx_size == 0) {
-                    Serial.printf("[HTTP] Socket %d ESTABLISHED but idle for %lu ms, forcing close\n", 
-                                  sock, socket_age);
-                    forceCloseSocket(sock);
-                    stuck_sockets++;
-                }
+            // Skip expensive RX buffer check for ESTABLISHED - rely on timeout only
+            // This avoids the slow W5100.readSnRX_RSR() SPI call
+            if (status == 0x17 && socket_age > HTTP_SOCKET_STALE_TIMEOUT_MS * 3) {
+                forceCloseSocket(sock);
+                stuck_sockets++;
             }
         }
+        XTP_TIMING_END(XTP_TIME_SOCKET_CLEANUP);
         
-        // If no listening socket on port 80, we need to restart the server
+        // Server restart outside timing to isolate its cost
         if (listening_sockets == 0) {
-            Serial.println("[HTTP] WARNING: No listening socket found! Restarting server...");
+            Serial.println("[HTTP] WARNING: No listening socket! Restarting...");
             server->begin();
             _server_restart_count++;
         }
         
         if (stuck_sockets > 0) {
-            Serial.printf("[HTTP] Cleaned up %d stuck socket(s)\n", stuck_sockets);
+            Serial.printf("[HTTP] Cleaned %d stuck socket(s)\n", stuck_sockets);
         }
-        XTP_TIMING_END(XTP_TIME_SOCKET_CLEANUP);
     }
     
     // Safe client stop with verification (non-blocking version)
@@ -392,17 +384,24 @@ public:
             }
             
             // Check if client is still connected
-            if (!client.connected()) {
-                Serial.println("[HTTP] Client disconnected during RECEIVING");
-                forceClientClose();
-                XTP_TIMING_END(XTP_TIME_HTTP_HANDLE);
-                return;
-            }
-            
-            // Wait for data to arrive (non-blocking)
-            if (!client.available()) {
-                XTP_TIMING_END(XTP_TIME_HTTP_HANDLE);
-                return;
+            {
+                XTP_TIMING_START(XTP_TIME_W5500_STATUS);
+                bool is_connected = client.connected();
+                bool has_data = is_connected && client.available();
+                XTP_TIMING_END(XTP_TIME_W5500_STATUS);
+                
+                if (!is_connected) {
+                    Serial.println("[HTTP] Client disconnected during RECEIVING");
+                    forceClientClose();
+                    XTP_TIMING_END(XTP_TIME_HTTP_HANDLE);
+                    return;
+                }
+                
+                // Wait for data to arrive (non-blocking)
+                if (!has_data) {
+                    XTP_TIMING_END(XTP_TIME_HTTP_HANDLE);
+                    return;
+                }
             }
             
             XTP_TIMING_START(XTP_TIME_HTTP_RECEIVE);
