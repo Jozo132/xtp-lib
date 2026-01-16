@@ -627,6 +627,7 @@ void ethernet_setup() {
     uint32_t startupTimeout = millis() + 10000; // 10 second startup timeout
     while (!ethState.isReady() && millis() < startupTimeout) {
         ethernet_state_machine_update();
+        oled_state_machine_update();  // Update OLED so MAC address is displayed
         IWatchdog.reload();
         
         // Allow early exit if disconnected
