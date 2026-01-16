@@ -41,8 +41,10 @@ struct OLEDStateMachine {
     uint32_t stateEnteredAt = 0;
     uint32_t lastPresenceCheck = 0;
     uint32_t lastSuccessfulWrite = 0;
+    uint32_t lastHealthCheck = 0;        // Periodic health verification
     uint32_t errorCount = 0;
     uint32_t reconnectCount = 0;
+    uint32_t slowWriteCount = 0;         // Track slow I2C operations
     bool present = false;
     bool needsFullRedraw = true;
     int updatePosition = 0;  // For incremental updates
@@ -91,12 +93,39 @@ I2CDevice* oled_i2c_device = nullptr;
 // OLED Presence Detection (non-blocking)
 // ============================================================================
 
-bool oled_check_presence() {
+// Threshold for detecting slow I2C (indicates device issue)
+#define OLED_SLOW_I2C_THRESHOLD_US  5000   // 5ms is way too long for simple I2C ops
+#define OLED_HEALTH_CHECK_INTERVAL_MS 2000 // Check health every 2s when ready
+
+// Force a fresh I2C presence check (updates device state)
+bool oled_check_presence_fresh() {
+    // Always do an actual I2C probe - this updates the device state
+    bool present = i2c_device_present(OLED_I2C_ADDRESS);
+    
     if (oled_i2c_device) {
-        return oled_i2c_device->isPresent() || 
-               (oled_i2c_device->shouldRetry() && i2c_device_present(OLED_I2C_ADDRESS));
+        // Manually update device state based on result
+        if (present) {
+            oled_i2c_device->state = I2C_DEVICE_PRESENT;
+            oled_i2c_device->consecutiveErrors = 0;
+        } else {
+            oled_i2c_device->state = I2C_DEVICE_NOT_PRESENT;
+        }
     }
-    return i2c_device_present(OLED_I2C_ADDRESS);
+    
+    return present;
+}
+
+// Check cached presence (fast, no I2C traffic)
+bool oled_check_presence_cached() {
+    if (oled_i2c_device) {
+        return oled_i2c_device->isPresent();
+    }
+    return false;
+}
+
+// Legacy function - now does fresh check
+bool oled_check_presence() {
+    return oled_check_presence_fresh();
 }
 
 // ============================================================================
@@ -155,6 +184,20 @@ void oled_state_machine_update() {
             break;
             
         case OLED_STATE_READY:
+            // Periodic health check - actively verify device presence
+            if (now - oledState.lastHealthCheck >= OLED_HEALTH_CHECK_INTERVAL_MS) {
+                oledState.lastHealthCheck = now;
+                
+                // Do a fresh I2C probe
+                if (!oled_check_presence_fresh()) {
+                    Serial.println("[OLED] Display disconnected (health check)");
+                    oledState.present = false;
+                    oledState.errorCount++;
+                    oledState.enterState(OLED_STATE_DISCONNECTED);
+                    break;
+                }
+            }
+            
             // Check if there's anything to update
             if (oled_force_redraw) {
                 oled_force_redraw = false;
@@ -196,6 +239,8 @@ void oled_state_machine_update() {
                 
                 // Update characters within time budget
                 int updated = 0;
+                bool slowDetected = false;
+                
                 while (oledState.updatePosition < OLED_CHARS) {
                     // Check time budget
                     if (micros() - startTime > OLED_MAX_UPDATE_TIME_US) {
@@ -228,15 +273,40 @@ void oled_state_machine_update() {
                         }
                         _oled_toDraw[j - i] = 0;
                         
+                        // Measure I2C write time to detect disconnection
+                        uint32_t writeStart = micros();
+                        
                         // Write to display
                         ssd1306_setCursor(x * 6, y * 8);
                         ssd1306_print(_oled_toDraw);
                         
-                        oledState.lastSuccessfulWrite = now;
+                        uint32_t writeTime = micros() - writeStart;
+                        
+                        // Check if write was suspiciously slow (indicates I2C issues)
+                        if (writeTime > OLED_SLOW_I2C_THRESHOLD_US) {
+                            oledState.slowWriteCount++;
+                            slowDetected = true;
+                            Serial.printf("[OLED] Slow I2C detected: %lu us\n", writeTime);
+                        } else {
+                            // Only mark success if the write was fast enough
+                            oledState.lastSuccessfulWrite = now;
+                        }
+                        
                         updated++;
                         oledState.updatePosition = j;
                     } else {
                         oledState.updatePosition++;
+                    }
+                }
+                
+                // If we detected slow writes, verify the device is still there
+                if (slowDetected) {
+                    if (!oled_check_presence_fresh()) {
+                        Serial.println("[OLED] Display disconnected (slow I2C)");
+                        oledState.present = false;
+                        oledState.errorCount++;
+                        oledState.enterState(OLED_STATE_DISCONNECTED);
+                        break;
                     }
                 }
                 
@@ -249,30 +319,47 @@ void oled_state_machine_update() {
             break;
             
         case OLED_STATE_DISCONNECTED:
-            // Periodically check if OLED reconnected (using I2C device tracking)
+            // Periodically check if OLED reconnected
             if (now - oledState.lastPresenceCheck >= OLED_PRESENCE_CHECK_INTERVAL_MS) {
                 oledState.lastPresenceCheck = now;
                 
-                // Only check if I2C bus is healthy and device should be retried
-                bool shouldCheck = true;
-                if (oled_i2c_device) {
-                    shouldCheck = oled_i2c_device->shouldRetry() && !i2cBus.busError;
-                }
-                
-                if (shouldCheck && oled_check_presence()) {
-                    Serial.println("[OLED] Display reconnected!");
-                    oledState.present = true;
-                    oledState.reconnectCount++;
-                    
-                    // Reinitialize
-                    ssd1306_setFixedFont(ssd1306xled_font6x8);
-                    ssd1306_128x64_i2c_init();
-                    ssd1306_clearScreen();
-                    
-                    oledState.needsFullRedraw = true;
-                    oledState.updatePosition = 0;
-                    oledState.lastSuccessfulWrite = now;
-                    oledState.enterState(OLED_STATE_READY);
+                // Only check if I2C bus is healthy
+                if (!i2cBus.busError) {
+                    // Do a fresh presence check (not cached)
+                    if (oled_check_presence_fresh()) {
+                        Serial.println("[OLED] Display reconnected - reinitializing...");
+                        oledState.present = true;
+                        oledState.reconnectCount++;
+                        oledState.slowWriteCount = 0;  // Reset slow count
+                        
+                        // Small delay to let the OLED power up properly
+                        delay(50);
+                        
+                        // Full hardware reinitialization sequence
+                        // 1. Set the font first
+                        ssd1306_setFixedFont(ssd1306xled_font6x8);
+                        
+                        // 2. Initialize the display hardware
+                        ssd1306_128x64_i2c_init();
+                        
+                        // 3. Small delay for initialization
+                        delay(10);
+                        
+                        // 4. Clear the display
+                        ssd1306_clearScreen();
+                        
+                        // 5. Reset our character buffers to force full redraw
+                        memset(_oled_data_active, ' ', OLED_CHARS);
+                        _oled_data_active[OLED_CHARS] = 0;
+                        
+                        oledState.needsFullRedraw = true;
+                        oledState.updatePosition = 0;
+                        oledState.lastSuccessfulWrite = now;
+                        oledState.lastHealthCheck = now;
+                        
+                        Serial.println("[OLED] Reinitialization complete");
+                        oledState.enterState(OLED_STATE_READY);
+                    }
                 }
             }
             break;
@@ -289,26 +376,8 @@ void oled_state_machine_update() {
             break;
     }
     
-    // Watchdog: if we haven't written successfully in a while, assume disconnected
-    if (oledState.state == OLED_STATE_READY || oledState.state == OLED_STATE_UPDATING) {
-        if (now - oledState.lastSuccessfulWrite > 10000) {
-            // Check presence using I2C device state first (avoid unnecessary I2C traffic)
-            bool present = false;
-            if (oled_i2c_device && oled_i2c_device->isPresent()) {
-                // Device was recently OK, do a fresh check
-                present = oled_check_presence();
-            }
-            
-            if (!present) {
-                Serial.println("[OLED] Display lost connection");
-                oledState.present = false;
-                oledState.errorCount++;
-                oledState.enterState(OLED_STATE_DISCONNECTED);
-            } else {
-                oledState.lastSuccessfulWrite = now;
-            }
-        }
-    }
+    // The periodic health check in OLED_STATE_READY and slow I2C detection in
+    // OLED_STATE_UPDATING handle disconnect detection, so no extra watchdog needed
 #endif
 }
 
@@ -405,15 +474,17 @@ bool oled_is_ready() { return oledState.isReady(); }
 const char* oled_state_name() { return oledState.getStateName(); }
 uint32_t oled_error_count() { return oledState.errorCount; }
 uint32_t oled_reconnect_count() { return oledState.reconnectCount; }
+uint32_t oled_slow_write_count() { return oledState.slowWriteCount; }
 
 // Get OLED status as JSON
 void oled_status_json(char* buffer, size_t bufferSize) {
     snprintf(buffer, bufferSize,
-        "{\"state\":\"%s\",\"present\":%s,\"ready\":%s,\"errors\":%lu,\"reconnects\":%lu}",
+        "{\"state\":\"%s\",\"present\":%s,\"ready\":%s,\"errors\":%lu,\"reconnects\":%lu,\"slowWrites\":%lu}",
         oledState.getStateName(),
         oledState.present ? "true" : "false",
         oledState.isReady() ? "true" : "false",
         oledState.errorCount,
-        oledState.reconnectCount
+        oledState.reconnectCount,
+        oledState.slowWriteCount
     );
 }
