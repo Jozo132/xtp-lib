@@ -37,6 +37,10 @@ void (*rest_setup)() = nullptr;
 **/
 
 bool xtp_rest_routing_initialized = false;
+
+// Buffer for socket status JSON response
+char socket_status_json[512] = "";
+
 void xtp_rest_routing() {
     if (xtp_rest_routing_initialized) return;
     xtp_rest_routing_initialized = true;
@@ -46,6 +50,28 @@ void xtp_rest_routing() {
 
     // Simple ping/pong
     rest.get("/ping", []() { rest.send(200, "text/plain", "pong"); });
+    
+    // Diagnostic endpoint for socket status monitoring
+    rest.get("/api/socket-status", []() {
+        uint32_t success, failed, restarts;
+        rest.getStats(success, failed, restarts);
+        
+        int offset = sprintf(socket_status_json, 
+            "{\"requests\":{\"success\":%lu,\"failed\":%lu},\"server_restarts\":%lu,\"sockets\":[",
+            success, failed, restarts);
+        
+        for (uint8_t sock = 0; sock < 8; sock++) {
+            uint8_t status = cyclic_sock_status(sock);
+            uint16_t port = cyclic_sock_port(sock);
+            offset += sprintf(socket_status_json + offset, 
+                "%s{\"id\":%d,\"status\":\"%s\",\"port\":%d}",
+                sock > 0 ? "," : "",
+                sock, rest.getSocketStatusName(status), port);
+        }
+        sprintf(socket_status_json + offset, "]}");
+        
+        rest.send(200, "application/json", socket_status_json);
+    });
 
     // User provided setup function
     if (rest_setup != nullptr) rest_setup();

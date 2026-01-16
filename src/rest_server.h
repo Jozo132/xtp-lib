@@ -2,6 +2,7 @@
 
 
 #include <Ethernet.h>
+#include <utility/w5100.h>
 
 #define HTTP_MAX_ARGS 32
 #define HTTP_MAX_ENDPOINTS 32
@@ -11,6 +12,50 @@
 #ifndef HTTP_RES_CHUNK_SIZE
 #define HTTP_RES_CHUNK_SIZE 2048
 #endif /* HTTP_RES_CHUNK_SIZE */
+
+// Socket timeout for stuck connections (ms)
+#ifndef HTTP_CLIENT_TIMEOUT_MS
+#define HTTP_CLIENT_TIMEOUT_MS 500
+#endif
+
+// Interval to check for stuck sockets (ms)
+#ifndef HTTP_SOCKET_CLEANUP_INTERVAL_MS
+#define HTTP_SOCKET_CLEANUP_INTERVAL_MS 5000
+#endif
+
+// Maximum time a socket can be in transitional state before forced cleanup (ms)
+#ifndef HTTP_SOCKET_STALE_TIMEOUT_MS
+#define HTTP_SOCKET_STALE_TIMEOUT_MS 10000
+#endif
+
+// Cached socket status for efficient monitoring (updated periodically)
+static uint8_t _cached_socket_status[8] = {0};
+static uint16_t _cached_socket_port[8] = {0};
+static uint32_t _last_socket_cache_update = 0;
+
+// Update cached socket status (call periodically to avoid SPI overhead)
+inline void updateSocketStatusCache() {
+    uint32_t now = millis();
+    if (now - _last_socket_cache_update < 100) return; // Update every 100ms max
+    _last_socket_cache_update = now;
+    
+    for (uint8_t sock = 0; sock < 8; sock++) {
+        _cached_socket_status[sock] = W5100.readSnSR(sock);
+        _cached_socket_port[sock] = W5100.readSnPORT(sock);
+    }
+}
+
+// Get cached socket status
+inline uint8_t cyclic_sock_status(uint8_t sock) {
+    updateSocketStatusCache();
+    return (sock < 8) ? _cached_socket_status[sock] : 0;
+}
+
+// Get cached socket port
+inline uint16_t cyclic_sock_port(uint8_t sock) {
+    updateSocketStatusCache();
+    return (sock < 8) ? _cached_socket_port[sock] : 0;
+}
 
 enum HTTPMethod { HTTP_GET, HTTP_POST };
 
@@ -56,8 +101,144 @@ public:
     Remap _remaps[HTTP_MAX_REMAPS]; // max 32 remaps
     int _remaps_count = 0;
 
+    // Socket health monitoring
+    uint32_t _socket_timestamps[8] = {0}; // Track when each socket became active
+    uint8_t _socket_states[8] = {0};      // Previous socket states
+    uint32_t _last_socket_cleanup = 0;
+    uint32_t _server_restart_count = 0;
+    uint8_t _server_socket = 0xFF;        // Track which socket the server is using
+    
     RestServer(EthernetServer& server) { this->server = &server; }
-    void begin() {}
+    void begin() { _last_socket_cleanup = millis(); }
+    
+    // Force close a specific socket on W5500
+    void forceCloseSocket(uint8_t sock) {
+        if (sock >= 8) return;
+        W5100.execCmdSn(sock, Sock_CLOSE);
+        W5100.writeSnIR(sock, 0xFF); // Clear all interrupt flags
+        Serial.printf("[HTTP] Force closed socket %d\n", sock);
+    }
+    
+    // Get human-readable socket status name
+    const char* getSocketStatusName(uint8_t status) {
+        switch(status) {
+            case 0x00: return "CLOSED";
+            case 0x13: return "INIT";
+            case 0x14: return "LISTEN";
+            case 0x15: return "SYNSENT";
+            case 0x16: return "SYNRECV";
+            case 0x17: return "ESTABLISHED";
+            case 0x18: return "FIN_WAIT";
+            case 0x1A: return "CLOSING";
+            case 0x1B: return "TIME_WAIT";
+            case 0x1C: return "CLOSE_WAIT";
+            case 0x1D: return "LAST_ACK";
+            case 0x22: return "UDP";
+            default: return "UNKNOWN";
+        }
+    }
+    
+    // Check and cleanup stuck sockets
+    void cleanupStuckSockets() {
+        uint32_t now = millis();
+        if (now - _last_socket_cleanup < HTTP_SOCKET_CLEANUP_INTERVAL_MS) return;
+        _last_socket_cleanup = now;
+        
+        uint8_t listening_sockets = 0;
+        uint8_t stuck_sockets = 0;
+        
+        for (uint8_t sock = 0; sock < 8; sock++) {
+            uint8_t status = cyclic_sock_status(sock); //W5100.readSnSR(sock);
+            uint16_t port = cyclic_sock_port(sock);
+            
+            // Track socket state transitions
+            if (status != _socket_states[sock]) {
+                _socket_timestamps[sock] = now;
+                _socket_states[sock] = status;
+            }
+            
+            uint32_t socket_age = now - _socket_timestamps[sock];
+            
+            // Count listening sockets on our port
+            if (status == 0x14 && port == 80) { // SnSR::LISTEN = 0x14
+                listening_sockets++;
+                _server_socket = sock;
+            }
+            
+            // Detect stuck sockets in transitional states
+            bool is_transitional = (status == 0x18 || // FIN_WAIT
+                                    status == 0x1A || // CLOSING
+                                    status == 0x1B || // TIME_WAIT
+                                    status == 0x1C || // CLOSE_WAIT
+                                    status == 0x1D);  // LAST_ACK
+            
+            if (is_transitional && socket_age > HTTP_SOCKET_STALE_TIMEOUT_MS) {
+                Serial.printf("[HTTP] Socket %d stuck in %s for %lu ms, forcing close\n", 
+                              sock, getSocketStatusName(status), socket_age);
+                forceCloseSocket(sock);
+                stuck_sockets++;
+            }
+            
+            // Also cleanup ESTABLISHED sockets that have been idle too long
+            // (could indicate a client that connected but never sent data)
+            if (status == 0x17 && socket_age > HTTP_SOCKET_STALE_TIMEOUT_MS * 2) {
+                // Check if this is the server's accepted socket with no data
+                uint16_t rx_size = W5100.readSnRX_RSR(sock);
+                if (rx_size == 0) {
+                    Serial.printf("[HTTP] Socket %d ESTABLISHED but idle for %lu ms, forcing close\n", 
+                                  sock, socket_age);
+                    forceCloseSocket(sock);
+                    stuck_sockets++;
+                }
+            }
+        }
+        
+        // If no listening socket on port 80, we need to restart the server
+        if (listening_sockets == 0) {
+            Serial.println("[HTTP] WARNING: No listening socket found! Restarting server...");
+            server->begin();
+            _server_restart_count++;
+        }
+        
+        if (stuck_sockets > 0) {
+            Serial.printf("[HTTP] Cleaned up %d stuck socket(s)\n", stuck_sockets);
+        }
+    }
+    
+    // Safe client stop with verification
+    void safeClientStop() {
+        if (client) {
+            // Flush any remaining data
+            client.flush();
+            client.stop();
+            
+            // Give the socket time to actually close
+            uint32_t timeout = millis() + 50;
+            while (client.connected() && millis() < timeout) {
+                delay(1);
+            }
+            
+            // Force disconnect if still connected
+            if (client.connected()) {
+                Serial.println("[HTTP] Client didn't close cleanly");
+            }
+        }
+        // Clear the client object
+        client = EthernetClient();
+    }
+    
+    // Debug: Print all socket statuses
+    void printSocketStatus() {
+        Serial.println("[HTTP] Socket Status:");
+        for (uint8_t sock = 0; sock < 8; sock++) {
+            uint8_t status = W5100.readSnSR(sock);
+            uint16_t port = W5100.readSnPORT(sock);
+            if (status != 0x00) { // Only print non-closed sockets
+                Serial.printf("  Socket %d: %s (0x%02X) port:%d\n", 
+                              sock, getSocketStatusName(status), status, port);
+            }
+        }
+    }
 
     void on(const char* uri, HTTPMethod method, EndpointHandler handler) {
         if (_endpoints_count >= HTTP_MAX_ENDPOINTS) return; // max endpoints (for now)
@@ -129,34 +310,71 @@ public:
     uint32_t _last_ms = 0;
     State state = WAITING;
     EthernetClient client;
+    
     void handleClient() {
         uint32_t t = millis();
-        uint32_t elapsed = t - _last_ms;
-        if (state != WAITING && elapsed > 100) {
-            Serial.println("HTTP server timeout");
-            client.stop();
-            state = WAITING;
+        
+        // Periodic socket health check
+        cleanupStuckSockets();
+        
+        // Handle timeout - with proper cleanup
+        if (state != WAITING) {
+            uint32_t elapsed = t - _last_ms;
+            if (elapsed > HTTP_CLIENT_TIMEOUT_MS) {
+                Serial.printf("[HTTP] Server timeout in state %d after %lu ms\n", state, elapsed);
+                safeClientStop();
+                state = WAITING;
+                _requests_failed++;
+                return; // Exit early to give other tasks time
+            }
         }
 
-        if (!client) {
+        if (state == WAITING) {
+            // Make sure we don't have a stale client object
+            if (client) {
+                safeClientStop();
+            }
+            
             client = server->available();
             if (!client) return;
-            // Serial.println("Client connected");
+            
+            // Verify client is actually connected
+            if (!client.connected()) {
+                safeClientStop();
+                return;
+            }
+            
             _ip = client.remoteIP();
             _last_ms = t;
             state = RECEIVING;
         }
 
         if (state == RECEIVING) {
+            // Check if client is still connected
+            if (!client.connected()) {
+                Serial.println("[HTTP] Client disconnected during RECEIVING");
+                safeClientStop();
+                state = WAITING;
+                return;
+            }
+            
             if (!client.available()) return;
+            
             char method[16];
             Serial.printf("[%d.%d.%d.%d]: ", _ip[0], _ip[1], _ip[2], _ip[3]);
             parseMethod(method);
-            // Serial.println(method);
             parseUri(_uri);
-            if (client.available() && client.peek() == ' ') client.read();
-            if (client.available() && client.peek() == '\r') client.read();
-            if (client.available() && client.peek() == '\n') client.read();
+            
+            // Skip whitespace and CRLF
+            while (client.available()) {
+                char c = client.peek();
+                if (c == ' ' || c == '\r' || c == '\n') {
+                    client.read();
+                } else {
+                    break;
+                }
+            }
+            
             bool is_get = strcmp(method, "GET") == 0;
             bool is_post = strcmp(method, "POST") == 0;
             if (is_get) {
@@ -164,12 +382,19 @@ public:
             } else if (is_post) {
                 _method = HTTP_POST;
             } else {
-                Serial.printf("Unsupported method %s\n", method);
-                client.stop();
+                Serial.printf("[HTTP] Unsupported method: %s\n", method);
+                // Send 405 Method Not Allowed before closing
+                client.println("HTTP/1.1 405 Method Not Allowed");
+                client.println("Connection: close");
+                client.println();
+                safeClientStop();
                 state = WAITING;
+                _requests_failed++;
                 return;
             }
-            delay(5);
+            
+            // Small delay to allow more data to arrive, but not blocking
+            delay(2);
             // Extract arguments
             if ((is_get || is_post)) {
                 _argc = 0;
@@ -257,6 +482,14 @@ public:
         }
 
         if (state == PROCESSING) {
+            // Verify client is still connected before processing
+            if (!client.connected()) {
+                Serial.println("[HTTP] Client disconnected before processing");
+                safeClientStop();
+                state = WAITING;
+                return;
+            }
+            
             state = FAILED; // Assume failure if no endpoint is found
             for (int i = 0; i < _endpoints_count; i++) {
                 auto& endpoint = _endpoints[i];
@@ -274,11 +507,16 @@ public:
                     _requests_success++;
                     _transmitted_bytes = 0;
                     Serial.printf("  %s %s", method == HTTP_GET ? "GET" : "POST", uri);
-                    u32 t = millis();
+                    uint32_t handler_start = millis();
+                    
+                    // Execute handler in try-catch style (check client validity)
                     endpoint.handler();
-                    client.stop();
-                    u32 elapsed_ms = millis() - t;
-                    Serial.printf(" - %u bytes in %u ms\n", _transmitted_bytes, elapsed_ms);
+                    
+                    // Ensure socket is properly closed after handler
+                    safeClientStop();
+                    
+                    uint32_t elapsed_ms = millis() - handler_start;
+                    Serial.printf(" - %u bytes in %lu ms\n", _transmitted_bytes, elapsed_ms);
                     state = WAITING;
                     break;
                 }
@@ -288,19 +526,32 @@ public:
         if (state == FAILED) {
             _requests_failed++;
             Serial.printf("  %s %s - 404 Not Found\n", _method == HTTP_GET ? "GET" : "POST", _uri);
-            if (_notFoundHandler_defined) {
-                _notFoundHandler();
-            } else {
-                client.println("HTTP/1.1 404 Not Found");
-                client.println("Content-Type: text/plain");
-                client.println("Connection: close");
-                client.println();
-                client.println("Error 404, page not found");
-                client.stop();
+            
+            // Check if client is still connected before sending 404
+            if (client.connected()) {
+                if (_notFoundHandler_defined) {
+                    _notFoundHandler();
+                } else {
+                    client.println("HTTP/1.1 404 Not Found");
+                    client.println("Content-Type: text/plain");
+                    client.println("Connection: close");
+                    client.println();
+                    client.println("Error 404, page not found");
+                }
             }
+            
+            // Always ensure proper cleanup
+            safeClientStop();
             state = WAITING;
         }
     } // handleClient
+    
+    // Get server statistics
+    void getStats(uint32_t& success, uint32_t& failed, uint32_t& restarts) {
+        success = _requests_success;
+        failed = _requests_failed;
+        restarts = _server_restart_count;
+    }
 
     void send(int code, const char* content_type, const char* content, int length) {
         // Using batched response in chunks of HTTP_RES_CHUNK_SIZE bytes
