@@ -227,13 +227,40 @@ public:
         }
     }
     
+    // Get socket number from EthernetClient (accessing private member via hack)
+    // The socket is stored as the first byte of the EthernetClient object
+    uint8_t getClientSocket(EthernetClient& c) {
+        return *((uint8_t*)&c);  // First byte is _sock
+    }
+    
+    // Non-blocking socket close - forces immediate W5500 socket disconnect
+    // This bypasses the TCP FIN/ACK handshake that can block for 500ms+
+    void forceSocketDisconnect() {
+        if (!client) return;
+        uint8_t sock = getClientSocket(client);
+        if (sock < 8) {
+            // Send DISCON command (graceful but non-blocking initiation)
+            W5100.execCmdSn(sock, Sock_DISCON);
+        }
+    }
+    
+    // Hard close socket - immediate close without any TCP handshake
+    void hardCloseSocket() {
+        if (!client) return;
+        uint8_t sock = getClientSocket(client);
+        if (sock < 8) {
+            W5100.execCmdSn(sock, Sock_CLOSE);
+            W5100.writeSnIR(sock, 0xFF);  // Clear interrupt flags
+        }
+        client = EthernetClient();
+    }
+    
     // Safe client stop with verification (non-blocking version)
     // Initiates close and returns immediately - actual close happens in state machine
     void initiateClientClose() {
         if (client) {
-            // Skip flush - it can block for 200+ms waiting for TCP ACK
-            // The W5500 will handle cleanup when socket closes
-            client.stop();
+            // Use non-blocking disconnect instead of client.stop()
+            forceSocketDisconnect();
         }
         _state_entered_ms = millis();
         state = CLOSING;
@@ -241,11 +268,7 @@ public:
     
     // Force immediate client cleanup (use when we can't wait)
     void forceClientClose() {
-        if (client) {
-            // Skip flush - it can block for 200+ms waiting for TCP ACK
-            client.stop();
-        }
-        client = EthernetClient();
+        hardCloseSocket();
         state = WAITING;
     }
     
@@ -621,29 +644,31 @@ public:
 
         case CLOSING:
             XTP_TIMING_START(XTP_TIME_HTTP_CLOSE);
-            // Non-blocking graceful close - wait up to 50ms
-            if (!client.connected() || timeInState() >= 50) {
-                if (client.connected()) {
-                    // Still connected after timeout - force close
-                    XTP_TIMING_END(XTP_TIME_HTTP_CLOSE);
-                    enterState(FORCE_CLOSING);
-                } else {
-                    // Clean disconnect
-                    client = EthernetClient();
+            {
+                // Check socket status directly - don't use client.connected() as it can block
+                uint8_t sock = getClientSocket(client);
+                uint8_t status = (sock < 8) ? W5100.readSnSR(sock) : 0;
+                bool isClosed = (status == 0x00 || status == 0x1C);  // CLOSED or CLOSE_WAIT
+                
+                // Non-blocking graceful close - wait up to 20ms max
+                if (isClosed || timeInState() >= 20) {
+                    if (!isClosed) {
+                        // Still not closed after timeout - force hard close
+                        hardCloseSocket();
+                    } else {
+                        client = EthernetClient();
+                    }
                     XTP_TIMING_END(XTP_TIME_HTTP_CLOSE);
                     enterState(WAITING);
+                } else {
+                    XTP_TIMING_END(XTP_TIME_HTTP_CLOSE);
                 }
-            } else {
-                XTP_TIMING_END(XTP_TIME_HTTP_CLOSE);
             }
             break;
 
         case FORCE_CLOSING:
-            // Force immediate close
-            if (client) {
-                Serial.println("[HTTP] Force closing stuck client");
-            }
-            client = EthernetClient();
+            // Force immediate hard close
+            hardCloseSocket();
             enterState(WAITING);
             break;
             
