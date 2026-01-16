@@ -205,26 +205,36 @@ public:
         }
     }
     
-    // Safe client stop with verification
-    void safeClientStop() {
+    // Safe client stop with verification (non-blocking version)
+    // Initiates close and returns immediately - actual close happens in state machine
+    void initiateClientClose() {
         if (client) {
-            // Flush any remaining data
             client.flush();
             client.stop();
-            
-            // Give the socket time to actually close
-            uint32_t timeout = millis() + 50;
-            while (client.connected() && millis() < timeout) {
-                delay(1);
-            }
-            
-            // Force disconnect if still connected
-            if (client.connected()) {
-                Serial.println("[HTTP] Client didn't close cleanly");
-            }
         }
-        // Clear the client object
+        _state_entered_ms = millis();
+        state = CLOSING;
+    }
+    
+    // Force immediate client cleanup (use when we can't wait)
+    void forceClientClose() {
+        if (client) {
+            client.flush();
+            client.stop();
+        }
         client = EthernetClient();
+        state = WAITING;
+    }
+    
+    // Enter a new state (tracks timing)
+    void enterState(State newState) {
+        state = newState;
+        _state_entered_ms = millis();
+    }
+    
+    // Time spent in current state
+    uint32_t timeInState() {
+        return millis() - _state_entered_ms;
     }
     
     // Debug: Print all socket statuses
@@ -306,8 +316,17 @@ public:
     }
 
     // Handle incoming requests with a state machine to avoid blocking the event loop of the microcontroller
-    enum State { WAITING, RECEIVING, PROCESSING, HANDLING, FAILED };
+    enum State { 
+        WAITING,           // Waiting for new client connection
+        RECEIVING,         // Receiving request headers and body
+        PROCESSING,        // Matching endpoint
+        HANDLING,          // Executing handler
+        FAILED,            // No matching endpoint found
+        CLOSING,           // Gracefully closing connection
+        FORCE_CLOSING      // Force closing stuck connection
+    };
     uint32_t _last_ms = 0;
+    uint32_t _state_entered_ms = 0;
     State state = WAITING;
     EthernetClient client;
     
@@ -317,22 +336,12 @@ public:
         // Periodic socket health check
         cleanupStuckSockets();
         
-        // Handle timeout - with proper cleanup
-        if (state != WAITING) {
-            uint32_t elapsed = t - _last_ms;
-            if (elapsed > HTTP_CLIENT_TIMEOUT_MS) {
-                Serial.printf("[HTTP] Server timeout in state %d after %lu ms\n", state, elapsed);
-                safeClientStop();
-                state = WAITING;
-                _requests_failed++;
-                return; // Exit early to give other tasks time
-            }
-        }
-
-        if (state == WAITING) {
+        switch (state) {
+            
+        case WAITING:
             // Make sure we don't have a stale client object
             if (client) {
-                safeClientStop();
+                forceClientClose();
             }
             
             client = server->available();
@@ -340,210 +349,235 @@ public:
             
             // Verify client is actually connected
             if (!client.connected()) {
-                safeClientStop();
+                forceClientClose();
                 return;
             }
             
             _ip = client.remoteIP();
             _last_ms = t;
-            state = RECEIVING;
-        }
+            enterState(RECEIVING);
+            break;
 
-        if (state == RECEIVING) {
+        case RECEIVING:
+            // Check timeout
+            if (t - _last_ms > HTTP_CLIENT_TIMEOUT_MS) {
+                Serial.printf("[HTTP] Timeout in RECEIVING after %lu ms\n", t - _last_ms);
+                _requests_failed++;
+                initiateClientClose();
+                return;
+            }
+            
             // Check if client is still connected
             if (!client.connected()) {
                 Serial.println("[HTTP] Client disconnected during RECEIVING");
-                safeClientStop();
-                state = WAITING;
+                forceClientClose();
                 return;
             }
             
+            // Wait for data to arrive (non-blocking)
             if (!client.available()) return;
             
-            char method[16];
-            Serial.printf("[%d.%d.%d.%d]: ", _ip[0], _ip[1], _ip[2], _ip[3]);
-            parseMethod(method);
-            parseUri(_uri);
-            
-            // Skip whitespace and CRLF
-            while (client.available()) {
-                char c = client.peek();
-                if (c == ' ' || c == '\r' || c == '\n') {
-                    client.read();
-                } else {
-                    break;
-                }
-            }
-            
-            bool is_get = strcmp(method, "GET") == 0;
-            bool is_post = strcmp(method, "POST") == 0;
-            if (is_get) {
-                _method = HTTP_GET;
-            } else if (is_post) {
-                _method = HTTP_POST;
-            } else {
-                Serial.printf("[HTTP] Unsupported method: %s\n", method);
-                // Send 405 Method Not Allowed before closing
-                client.println("HTTP/1.1 405 Method Not Allowed");
-                client.println("Connection: close");
-                client.println();
-                safeClientStop();
-                state = WAITING;
-                _requests_failed++;
-                return;
-            }
-            
-            // Small delay to allow more data to arrive, but not blocking
-            delay(2);
-            // Extract arguments
-            if ((is_get || is_post)) {
-                _argc = 0;
-                uint32_t timeout = millis() + 100;
+            {
+                char method[16];
+                Serial.printf("[%d.%d.%d.%d]: ", _ip[0], _ip[1], _ip[2], _ip[3]);
+                parseMethod(method);
+                parseUri(_uri);
+                
+                // Skip whitespace and CRLF
                 while (client.available()) {
-                    if (millis() > timeout) break;
-                    char line[65];
                     char c = client.peek();
-                    while (c && (c == ' ' || c == '\r' || c == '\n')) {
-                        if (millis() > timeout) break;
+                    if (c == ' ' || c == '\r' || c == '\n') {
                         client.read();
-                        c = client.peek(); // Skip spaces, CR, LF
+                    } else {
+                        break;
                     }
-                    bool isHeader = c >= 'A' && c <= 'Z';
-                    if (!isHeader) break; // End of headers, start of body
-                    int i = 0;
-                    while (client.available()) {
-                        if (millis() > timeout) break;
-                        c = client.read();
-                        if (i == 0 && c == ' ') break;
-                        if (c == '\r' || c == '\n' || c == ':') break;
-                        line[i] = c;
-                        i++;
-                        if (i >= 64) break;
-                    }
-                    line[i] = '\0';
-                    int name_len = i;
-                    // If the first character is a capital letter, it's a header
-                    // int pos = line.indexOf(':');
-                    if (c == ':') {
-                        char* name = (char*) _args[_argc].name;
-                        char* value = (char*) _args[_argc].value;
-                        for (int i = 0; i < name_len; i++)
-                            name[i] = line[i];
-                        name[name_len] = '\0';
-
-                        // Ignore: "Accept", "Accept-Encoding", "Accept-Language", "Cache-Control", "Connection", "DNT", "User-Agent"
-                        if (strcmp(name, "Accept") == 0 || strcmp(name, "Accept-Encoding") == 0 || strcmp(name, "Accept-Language") == 0 || strcmp(name, "Cache-Control") == 0 || strcmp(name, "Connection") == 0 || strcmp(name, "DNT") == 0 || strcmp(name, "User-Agent") == 0 || strcmp(name, "Upgrade-Insecure-Requests") == 0) {
-                            // Consume the rest of the line, so we can read the next one
-                            while (client.available()) {
-                                if (millis() > timeout) break;
-                                c = client.read();
-                                if (c == '\n' || c == '\r') break;
-                            }
-                            continue;
+                }
+                
+                bool is_get = strcmp(method, "GET") == 0;
+                bool is_post = strcmp(method, "POST") == 0;
+                if (is_get) {
+                    _method = HTTP_GET;
+                } else if (is_post) {
+                    _method = HTTP_POST;
+                } else {
+                    Serial.printf("[HTTP] Unsupported method: %s\n", method);
+                    client.print("HTTP/1.1 405 Method Not Allowed\r\n");
+                    client.print("Connection: close\r\n");
+                    client.print("\r\n");
+                    _requests_failed++;
+                    initiateClientClose();
+                    return;
+                }
+                
+                // Parse headers and body (with timeout protection)
+                if (is_get || is_post) {
+                    _argc = 0;
+                    uint32_t parse_timeout = t + 100;
+                    while (client.available() && millis() < parse_timeout) {
+                        char line[65];
+                        char c = client.peek();
+                        while (c && (c == ' ' || c == '\r' || c == '\n') && millis() < parse_timeout) {
+                            client.read();
+                            if (!client.available()) break;
+                            c = client.peek();
                         }
-
+                        bool isHeader = c >= 'A' && c <= 'Z';
+                        if (!isHeader) break;
+                        
                         int i = 0;
-                        uint32_t timeout = millis() + 100;
-                        bool failed = false;
-                        while (client.available()) {
-                            if (millis() > timeout) {
-                                failed = true;
-                                break;
-                            };
-                            if (!client.available()) continue;
+                        while (client.available() && millis() < parse_timeout) {
                             c = client.read();
-                            if (c == '\n' || c == '\r') break;
-                            value[i++] = c;
+                            if (i == 0 && c == ' ') break;
+                            if (c == '\r' || c == '\n' || c == ':') break;
+                            line[i++] = c;
                             if (i >= 64) break;
                         }
-
-                        if (failed) break;
-
-                        value[i] = '\0';
-
-                        // Serial.printf("  %s: ", name);
-                        // Serial.println(value);
-                        _argc++;
-                        if (_argc >= HTTP_MAX_ARGS) break;
+                        line[i] = '\0';
+                        int name_len = i;
+                        
+                        if (c == ':') {
+                            char* name = (char*) _args[_argc].name;
+                            char* value = (char*) _args[_argc].value;
+                            for (int j = 0; j < name_len; j++)
+                                name[j] = line[j];
+                            name[name_len] = '\0';
+                            
+                            // Skip unneeded headers
+                            if (strcmp(name, "Accept") == 0 || strcmp(name, "Accept-Encoding") == 0 || 
+                                strcmp(name, "Accept-Language") == 0 || strcmp(name, "Cache-Control") == 0 || 
+                                strcmp(name, "Connection") == 0 || strcmp(name, "DNT") == 0 || 
+                                strcmp(name, "User-Agent") == 0 || strcmp(name, "Upgrade-Insecure-Requests") == 0) {
+                                while (client.available() && millis() < parse_timeout) {
+                                    c = client.read();
+                                    if (c == '\n' || c == '\r') break;
+                                }
+                                continue;
+                            }
+                            
+                            i = 0;
+                            while (client.available() && millis() < parse_timeout) {
+                                c = client.read();
+                                if (c == '\n' || c == '\r') break;
+                                value[i++] = c;
+                                if (i >= 64) break;
+                            }
+                            value[i] = '\0';
+                            _argc++;
+                            if (_argc >= HTTP_MAX_ARGS) break;
+                        }
                     }
+                    
+                    // Read body
+                    body_length = 0;
+                    parse_timeout = millis() + 50;
+                    while (client.available() && millis() < parse_timeout) {
+                        if (body_length >= HTTP_MAX_BODY_SIZE) break;
+                        body[body_length++] = client.read();
+                    }
+                    body[body_length] = '\0';
                 }
-
-                timeout = millis() + 100;
-                body_length = 0;
-                while (client.available()) {
-                    if (millis() > timeout) break;
-                    if (body_length >= HTTP_MAX_BODY_SIZE) break;
-                    body[body_length++] = client.read();
-                }
-                body[body_length] = '\0';
             }
             _last_ms = t;
-            state = PROCESSING;
-        }
+            enterState(PROCESSING);
+            break;
 
-        if (state == PROCESSING) {
-            // Verify client is still connected before processing
-            if (!client.connected()) {
-                Serial.println("[HTTP] Client disconnected before processing");
-                safeClientStop();
-                state = WAITING;
+        case PROCESSING:
+            // Check timeout
+            if (t - _last_ms > HTTP_CLIENT_TIMEOUT_MS) {
+                Serial.printf("[HTTP] Timeout in PROCESSING after %lu ms\n", t - _last_ms);
+                _requests_failed++;
+                initiateClientClose();
                 return;
             }
             
-            state = FAILED; // Assume failure if no endpoint is found
-            for (int i = 0; i < _endpoints_count; i++) {
-                auto& endpoint = _endpoints[i];
-                auto uri = endpoint.uri;
-                auto method = endpoint.method;
-                bool uri_match = strcmp(uri, _uri) == 0;
-                if (!uri_match) {
-                    const char* alt_uri = getMap(_uri);
-                    if (alt_uri != nullptr)
-                        uri_match = strcmp(uri, alt_uri) == 0;
+            // Verify client is still connected
+            if (!client.connected()) {
+                Serial.println("[HTTP] Client disconnected before processing");
+                forceClientClose();
+                return;
+            }
+            
+            // Find matching endpoint
+            {
+                bool found = false;
+                for (int i = 0; i < _endpoints_count; i++) {
+                    auto& endpoint = _endpoints[i];
+                    auto uri = endpoint.uri;
+                    auto method = endpoint.method;
+                    bool uri_match = strcmp(uri, _uri) == 0;
+                    if (!uri_match) {
+                        const char* alt_uri = getMap(_uri);
+                        if (alt_uri != nullptr)
+                            uri_match = strcmp(uri, alt_uri) == 0;
+                    }
+                    bool method_match = method == _method;
+                    
+                    if (uri_match && method_match) {
+                        _requests_success++;
+                        _transmitted_bytes = 0;
+                        Serial.printf("  %s %s", method == HTTP_GET ? "GET" : "POST", uri);
+                        uint32_t handler_start = millis();
+                        
+                        // Execute handler
+                        endpoint.handler();
+                        
+                        uint32_t elapsed_ms = millis() - handler_start;
+                        Serial.printf(" - %u bytes in %lu ms\n", _transmitted_bytes, elapsed_ms);
+                        
+                        found = true;
+                        initiateClientClose();
+                        break;
+                    }
                 }
-                bool method_match = method == _method;
-
-                if (uri_match && method_match) {
-                    _requests_success++;
-                    _transmitted_bytes = 0;
-                    Serial.printf("  %s %s", method == HTTP_GET ? "GET" : "POST", uri);
-                    uint32_t handler_start = millis();
-                    
-                    // Execute handler in try-catch style (check client validity)
-                    endpoint.handler();
-                    
-                    // Ensure socket is properly closed after handler
-                    safeClientStop();
-                    
-                    uint32_t elapsed_ms = millis() - handler_start;
-                    Serial.printf(" - %u bytes in %lu ms\n", _transmitted_bytes, elapsed_ms);
-                    state = WAITING;
-                    break;
+                
+                if (!found) {
+                    enterState(FAILED);
                 }
             }
-        }
+            break;
 
-        if (state == FAILED) {
+        case FAILED:
             _requests_failed++;
             Serial.printf("  %s %s - 404 Not Found\n", _method == HTTP_GET ? "GET" : "POST", _uri);
             
-            // Check if client is still connected before sending 404
             if (client.connected()) {
                 if (_notFoundHandler_defined) {
                     _notFoundHandler();
                 } else {
-                    client.println("HTTP/1.1 404 Not Found");
-                    client.println("Content-Type: text/plain");
-                    client.println("Connection: close");
-                    client.println();
-                    client.println("Error 404, page not found");
+                    client.print("HTTP/1.1 404 Not Found\r\n");
+                    client.print("Content-Type: text/plain\r\n");
+                    client.print("Connection: close\r\n");
+                    client.print("\r\n");
+                    client.print("Error 404, page not found");
                 }
             }
+            initiateClientClose();
+            break;
+
+        case CLOSING:
+            // Non-blocking graceful close - wait up to 50ms
+            if (!client.connected() || timeInState() >= 50) {
+                if (client.connected()) {
+                    // Still connected after timeout - force close
+                    enterState(FORCE_CLOSING);
+                } else {
+                    // Clean disconnect
+                    client = EthernetClient();
+                    enterState(WAITING);
+                }
+            }
+            break;
+
+        case FORCE_CLOSING:
+            // Force immediate close
+            if (client) {
+                Serial.println("[HTTP] Force closing stuck client");
+            }
+            client = EthernetClient();
+            enterState(WAITING);
+            break;
             
-            // Always ensure proper cleanup
-            safeClientStop();
-            state = WAITING;
-        }
+        } // switch(state)
     } // handleClient
     
     // Get server statistics
@@ -582,13 +616,10 @@ public:
 
 
     void sendHeader(int code, const char* content_type, int length = -1) {
-        client.printf("HTTP/1.1 %d %s\n", code, code >= 300 ? "NOT OK" : "OK");
-        client.printf("Content-Type: %s\n", content_type);
-        if (length >= 0) client.printf("Content-Length: %d\n", length);
-        client.printf("Connection: close\n\n");
-        // client.printf("Connection: keep-alive\n");
-        // client.printf("Keep-Alive: timeout=5\n\n");
-        // client.setConnectionTimeout(5000);
+        client.printf("HTTP/1.1 %d %s\r\n", code, code >= 300 ? "NOT OK" : "OK");
+        client.printf("Content-Type: %s\r\n", content_type);
+        if (length >= 0) client.printf("Content-Length: %d\r\n", length);
+        client.printf("Connection: close\r\n\r\n");
     }
 
     void write(uint8_t* buffer, int length) {
