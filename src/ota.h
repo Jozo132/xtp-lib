@@ -48,8 +48,9 @@ void ota_setup() {
     OTA.onRequest([]() {
         if (ota_notify) ota_notify();
 
-        ssd1306_clearScreen();
-        ssd1306_printFixed(0, 0, "OTA Firmware Update", STYLE_NORMAL);
+        xtp_ssd1306_clear();
+        xtp_ssd1306_setCursor(0, 0);
+        xtp_ssd1306_print("OTA Firmware Update");
         oled_force_redraw = true;
 
         prev_progress = 999;
@@ -71,12 +72,14 @@ void ota_setup() {
             Serial.printf("Progress: %6u/%6u (%3.1f%%)\n", progress, total, prog);
             char msg[12];
             sprintf(msg, "%3.1f%%", prog);
-            ssd1306_printFixed(6, 20, msg, STYLE_NORMAL);
+            xtp_ssd1306_setCursor(1, 2);  // Column 1, Row 2 (approx 6px, 16px)
+            xtp_ssd1306_print(msg);
         }
         });
     OTA.onEnd([]() {
         IWatchdog.reload();
-        ssd1306_printFixed(0, 40, "Done - RESTARTING", STYLE_NORMAL);
+        xtp_ssd1306_setCursor(0, 5);  // Row 5 (approx 40px)
+        xtp_ssd1306_print("Done - RESTARTING");
         Serial.println("\nEnd");
         delay(50);
         // NVIC_SystemReset();
@@ -91,11 +94,12 @@ void ota_setup() {
         else if (error == OTA_END_ERROR) sprintf(msg, "%sEnd Failed", msg);
         Serial.println(msg);
 
-        ssd1306_printFixed(0, 40, msg, STYLE_NORMAL);
+        xtp_ssd1306_setCursor(0, 5);  // Row 5 (approx 40px)
+        xtp_ssd1306_print(msg);
         if (ota_update_in_progress) {
             ota_update_in_progress = false;
             thread_resume();
-            ssd1306_clearScreen();
+            xtp_ssd1306_clear();
             if (ota_resume) ota_resume();
         }
         });
