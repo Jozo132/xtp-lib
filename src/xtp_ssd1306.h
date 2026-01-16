@@ -470,11 +470,12 @@ bool xtp_ssd1306_init(uint8_t address = 0x3C) {
     xtp_oled.writeCount = 0;
     xtp_oled.errorCount = 0;
     
-    // Register with I2C bus manager
+    // Register with I2C bus manager (or get existing registration)
     xtp_oled.device = i2cBus.registerDevice(address, "SSD1306", false);
     
-    // Check presence first
-    if (!xtp_ssd1306_present()) {
+    // Check presence with actual probe (not cached state)
+    // This is important for reconnection scenarios
+    if (!xtp_ssd1306_probe()) {
         Serial.println("[SSD1306] Display not found");
         return false;
     }
