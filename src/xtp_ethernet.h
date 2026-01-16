@@ -649,7 +649,6 @@ void ethernet_setup() {
 // }
 
 void TCP_end(EthernetClient client) {
-    //delay(1);
     client.stop();  //stopping client
 }
 

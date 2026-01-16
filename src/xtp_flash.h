@@ -123,7 +123,6 @@ void _flash_write(bool force) {
             flash.eraseSection(RETAINED_DATA_FLASH_ADDRESS, RETAINED_DATA_SIZE);
             flash.writeByteArray(RETAINED_DATA_FLASH_ADDRESS, _flash_retain_image, RETAINED_DATA_SIZE);
             Serial.println("FLASH retained data stored");
-            // delay(10);
             // printRetainedData();
         } else {
             retainedData.write_count++;

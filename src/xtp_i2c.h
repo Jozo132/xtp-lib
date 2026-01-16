@@ -257,57 +257,150 @@ I2CBusManager i2cBus;
 bool i2c_initialized = false;
 
 // ============================================================================
-// I2C Bus Recovery
+// I2C Bus Recovery (Non-Blocking State Machine)
 // ============================================================================
 
-// I2C bus recovery - toggle SCL to release stuck SDA
-void i2c_bus_recovery() {
-    Serial.println("[I2C] Attempting bus recovery");
+enum I2CRecoveryState {
+    I2C_RECOVERY_IDLE,
+    I2C_RECOVERY_TOGGLE_LOW,
+    I2C_RECOVERY_TOGGLE_HIGH,
+    I2C_RECOVERY_STOP_SDA_LOW,
+    I2C_RECOVERY_STOP_SCL_HIGH,
+    I2C_RECOVERY_STOP_SDA_HIGH,
+    I2C_RECOVERY_REINIT
+};
+
+struct I2CRecoveryStateMachine {
+    I2CRecoveryState state = I2C_RECOVERY_IDLE;
+    uint32_t stateEnteredUs = 0;
+    uint8_t toggleCount = 0;
     
-    // End current Wire session
-    Wire.end();
+    bool isActive() const { return state != I2C_RECOVERY_IDLE; }
     
-    // Manually toggle SCL to release any stuck slave
-    pinMode(I2C_SCL_pin, OUTPUT);
-    pinMode(I2C_SDA_pin, INPUT_PULLUP);
-    
-    for (int i = 0; i < 16; i++) {
-        digitalWrite(I2C_SCL_pin, LOW);
-        delayMicroseconds(5);
-        digitalWrite(I2C_SCL_pin, HIGH);
-        delayMicroseconds(5);
+    void start() {
+        if (state != I2C_RECOVERY_IDLE) return;  // Already running
+        Serial.println("[I2C] Starting non-blocking bus recovery");
         
-        // Check if SDA is released
-        if (digitalRead(I2C_SDA_pin) == HIGH) {
-            break;
+        // End current Wire session
+        Wire.end();
+        
+        // Configure pins for manual control
+        pinMode(I2C_SCL_pin, OUTPUT);
+        pinMode(I2C_SDA_pin, INPUT_PULLUP);
+        
+        toggleCount = 0;
+        state = I2C_RECOVERY_TOGGLE_LOW;
+        stateEnteredUs = micros();
+    }
+    
+    // Call this from loop - returns true when recovery is complete
+    bool update() {
+        if (state == I2C_RECOVERY_IDLE) return true;
+        
+        uint32_t now = micros();
+        uint32_t elapsed = now - stateEnteredUs;
+        
+        switch (state) {
+            case I2C_RECOVERY_TOGGLE_LOW:
+                digitalWrite(I2C_SCL_pin, LOW);
+                state = I2C_RECOVERY_TOGGLE_HIGH;
+                stateEnteredUs = now;
+                break;
+                
+            case I2C_RECOVERY_TOGGLE_HIGH:
+                if (elapsed >= 5) {  // 5µs delay
+                    digitalWrite(I2C_SCL_pin, HIGH);
+                    toggleCount++;
+                    
+                    // Check if SDA is released or we've done 16 toggles
+                    if (digitalRead(I2C_SDA_pin) == HIGH || toggleCount >= 16) {
+                        // Proceed to STOP condition
+                        pinMode(I2C_SDA_pin, OUTPUT);
+                        digitalWrite(I2C_SDA_pin, LOW);
+                        state = I2C_RECOVERY_STOP_SDA_LOW;
+                    } else {
+                        // Continue toggling
+                        state = I2C_RECOVERY_TOGGLE_LOW;
+                    }
+                    stateEnteredUs = now;
+                }
+                break;
+                
+            case I2C_RECOVERY_STOP_SDA_LOW:
+                if (elapsed >= 5) {
+                    digitalWrite(I2C_SCL_pin, HIGH);
+                    state = I2C_RECOVERY_STOP_SCL_HIGH;
+                    stateEnteredUs = now;
+                }
+                break;
+                
+            case I2C_RECOVERY_STOP_SCL_HIGH:
+                if (elapsed >= 5) {
+                    digitalWrite(I2C_SDA_pin, HIGH);
+                    state = I2C_RECOVERY_STOP_SDA_HIGH;
+                    stateEnteredUs = now;
+                }
+                break;
+                
+            case I2C_RECOVERY_STOP_SDA_HIGH:
+                if (elapsed >= 5) {
+                    state = I2C_RECOVERY_REINIT;
+                    stateEnteredUs = now;
+                }
+                break;
+                
+            case I2C_RECOVERY_REINIT:
+                // Reinitialize I2C
+                Wire.setSDA(I2C_SDA_pin);
+                Wire.setSCL(I2C_SCL_pin);
+                Wire.setClock(I2C_CLOCK);
+                Wire.begin();
+                
+                // Reset bus error state
+                i2cBus.busError = false;
+                
+                // Reset ALL device states to allow immediate re-probing
+                for (int i = 0; i < i2cBus.deviceCount; i++) {
+                    i2cBus.devices[i].state = I2C_DEV_UNKNOWN;
+                    i2cBus.devices[i].lastCheckTime = 0;
+                }
+                
+                Serial.printf("[I2C] Bus recovery complete (%d toggles)\n", toggleCount);
+                state = I2C_RECOVERY_IDLE;
+                return true;
+                
+            default:
+                state = I2C_RECOVERY_IDLE;
+                break;
         }
+        
+        return false;
     }
-    
-    // Generate STOP condition
-    pinMode(I2C_SDA_pin, OUTPUT);
-    digitalWrite(I2C_SDA_pin, LOW);
-    delayMicroseconds(5);
-    digitalWrite(I2C_SCL_pin, HIGH);
-    delayMicroseconds(5);
-    digitalWrite(I2C_SDA_pin, HIGH);
-    delayMicroseconds(5);
-    
-    // Reinitialize I2C
-    Wire.setSDA(I2C_SDA_pin);
-    Wire.setSCL(I2C_SCL_pin);
-    Wire.setClock(I2C_CLOCK);
-    Wire.begin();
-    
-    // Reset bus error state
-    i2cBus.busError = false;
-    
-    // Reset ALL device states to allow immediate re-probing
-    for (int i = 0; i < i2cBus.deviceCount; i++) {
-        i2cBus.devices[i].state = I2C_DEV_UNKNOWN;
-        i2cBus.devices[i].lastCheckTime = 0;  // Allow immediate retry
+};
+
+I2CRecoveryStateMachine i2cRecovery;
+
+// Non-blocking: Start recovery process (call i2c_recovery_update() from loop)
+void i2c_bus_recovery_start() {
+    i2cRecovery.start();
+}
+
+// Non-blocking: Update recovery state machine (returns true when done)
+bool i2c_bus_recovery_update() {
+    return i2cRecovery.update();
+}
+
+// Check if recovery is in progress
+bool i2c_bus_recovery_active() {
+    return i2cRecovery.isActive();
+}
+
+// Legacy blocking version (for compatibility - calls state machine in loop)
+void i2c_bus_recovery() {
+    i2cRecovery.start();
+    while (!i2cRecovery.update()) {
+        // Spin until complete (~80-160µs total)
     }
-    
-    Serial.println("[I2C] Bus recovery complete - device states reset");
 }
 
 // ============================================================================
@@ -348,12 +441,19 @@ void i2c_loop() {
     
     uint32_t now = millis();
     
-    // Periodic bus recovery when in error state
+    // If recovery is in progress, update it (non-blocking)
+    if (i2c_bus_recovery_active()) {
+        i2c_bus_recovery_update();
+        return;  // Don't do other maintenance while recovering
+    }
+    
+    // Trigger recovery when in error state (non-blocking)
     if (i2cBus.busError) {
         if (now - i2c_last_recovery_attempt >= I2C_AUTO_RECOVERY_INTERVAL_MS) {
             i2c_last_recovery_attempt = now;
             Serial.println("[I2C] Auto-recovery triggered");
-            i2c_bus_recovery();
+            i2c_bus_recovery_start();  // Start non-blocking recovery
+            return;
         }
     }
     
