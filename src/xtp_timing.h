@@ -33,9 +33,11 @@ enum XtpTimingSection {
     XTP_TIME_HTTP_HANDLE,         // rest.handleClient() - total
     XTP_TIME_OTA_LOOP,            // ota_loop()
     XTP_TIME_OLED_TICKER,         // oled_ticker()
+    XTP_TIME_HTTP_ACCEPT,         // server->available() call
     XTP_TIME_HTTP_RECEIVE,        // HTTP request receive phase
     XTP_TIME_HTTP_HANDLER,        // HTTP handler execution
     XTP_TIME_HTTP_SEND,           // HTTP response send phase
+    XTP_TIME_HTTP_CLOSE,          // Client close phase
     XTP_TIME_SOCKET_CLEANUP,      // Socket health check
     XTP_TIME_SOCKET_CACHE,        // Socket status cache update
     XTP_TIME_I2C_RECOVERY,        // I2C bus recovery
@@ -53,9 +55,11 @@ static const char* const XTP_TIMING_NAMES[] = {
     "http_handle",
     "ota_loop",
     "oled_ticker",
+    "http_accept",
     "http_receive",
     "http_handler",
     "http_send",
+    "http_close",
     "socket_cleanup",
     "socket_cache",
     "i2c_recovery",

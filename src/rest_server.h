@@ -361,7 +361,9 @@ public:
                 forceClientClose();
             }
             
+            XTP_TIMING_START(XTP_TIME_HTTP_ACCEPT);
             client = server->available();
+            XTP_TIMING_END(XTP_TIME_HTTP_ACCEPT);
             if (!client) {
                 XTP_TIMING_END(XTP_TIME_HTTP_HANDLE);
                 return;
@@ -613,16 +615,21 @@ public:
             break;
 
         case CLOSING:
+            XTP_TIMING_START(XTP_TIME_HTTP_CLOSE);
             // Non-blocking graceful close - wait up to 50ms
             if (!client.connected() || timeInState() >= 50) {
                 if (client.connected()) {
                     // Still connected after timeout - force close
+                    XTP_TIMING_END(XTP_TIME_HTTP_CLOSE);
                     enterState(FORCE_CLOSING);
                 } else {
                     // Clean disconnect
                     client = EthernetClient();
+                    XTP_TIMING_END(XTP_TIME_HTTP_CLOSE);
                     enterState(WAITING);
                 }
+            } else {
+                XTP_TIMING_END(XTP_TIME_HTTP_CLOSE);
             }
             break;
 
