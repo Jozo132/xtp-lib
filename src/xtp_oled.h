@@ -85,6 +85,14 @@ char _oled_toDraw[OLED_CHARS + 1] = { 0 };
 bool oled_initialized = false;
 bool oled_force_redraw = false;
 
+// Callback for when OLED reconnects (to refresh display content)
+typedef void (*oled_reconnect_callback_t)();
+oled_reconnect_callback_t oled_on_reconnect = nullptr;
+
+void oled_set_reconnect_callback(oled_reconnect_callback_t callback) {
+    oled_on_reconnect = callback;
+}
+
 // I2C device handle for OLED
 I2CDevice* oled_i2c_device = nullptr;
 
@@ -304,38 +312,50 @@ void oled_state_machine_update() {
             if (now - oledState.lastPresenceCheck >= OLED_PRESENCE_CHECK_INTERVAL_MS) {
                 oledState.lastPresenceCheck = now;
                 
-                // Only check if I2C bus is healthy
-                if (!i2cBus.busError) {
-                    // Do a fresh presence check
-                    if (xtp_ssd1306_present()) {
-                        Serial.println("[OLED] Display reconnected - reinitializing...");
+                // If bus has errors, try recovery first
+                if (i2cBus.busError) {
+                    Serial.println("[OLED] Attempting I2C bus recovery...");
+                    i2c_bus_recovery();
+                }
+                
+                // Now try to detect the display
+                if (xtp_ssd1306_present()) {
+                    Serial.println("[OLED] Display reconnected - reinitializing...");
+                    
+                    // Small delay to let the OLED power up properly
+                    delay(50);
+                    
+                    // Full hardware reinitialization using our driver
+                    if (xtp_ssd1306_init(OLED_I2C_ADDRESS)) {
+                        oledState.present = true;
+                        oledState.reconnectCount++;
+                        oledState.slowWriteCount = 0;
                         
-                        // Small delay to let the OLED power up properly
-                        delay(50);
+                        // Clear display
+                        xtp_ssd1306_clear();
                         
-                        // Full hardware reinitialization using our driver
-                        if (xtp_ssd1306_init(OLED_I2C_ADDRESS)) {
-                            oledState.present = true;
-                            oledState.reconnectCount++;
-                            oledState.slowWriteCount = 0;
-                            
-                            // Clear display
-                            xtp_ssd1306_clear();
-                            
-                            // Reset our character buffers to force full redraw
-                            memset(_oled_data_active, ' ', OLED_CHARS);
-                            _oled_data_active[OLED_CHARS] = 0;
-                            
-                            oledState.needsFullRedraw = true;
-                            oledState.updatePosition = 0;
-                            oledState.lastSuccessfulWrite = now;
-                            oledState.lastHealthCheck = now;
-                            
-                            Serial.println("[OLED] Reinitialization complete");
-                            oledState.enterState(OLED_STATE_READY);
-                        } else {
-                            Serial.println("[OLED] Reinitialization failed");
+                        // Reset our character buffers to force full redraw
+                        memset(_oled_data_active, ' ', OLED_CHARS);
+                        _oled_data_active[OLED_CHARS] = 0;
+                        
+                        // Also clear the new buffer so callback can populate it fresh
+                        memset(_oled_data_new, ' ', OLED_CHARS);
+                        _oled_data_new[OLED_CHARS] = 0;
+                        
+                        // Call reconnect callback to refresh display content
+                        if (oled_on_reconnect) {
+                            oled_on_reconnect();
                         }
+                        
+                        oledState.needsFullRedraw = true;
+                        oledState.updatePosition = 0;
+                        oledState.lastSuccessfulWrite = now;
+                        oledState.lastHealthCheck = now;
+                        
+                        Serial.println("[OLED] Reinitialization complete");
+                        oledState.enterState(OLED_STATE_READY);
+                    } else {
+                        Serial.println("[OLED] Reinitialization failed");
                     }
                 }
             }
@@ -436,7 +456,7 @@ void oled_ticker() {
         };
         
         const uint8_t* bitmap = &sprite[xtp_spinner_index][0];
-        xtp_ssd1306_drawBuffer(0, 0, 6, 8, bitmap);  // Page 0, column 0
+        xtp_ssd1306_drawBuffer(0, 7, 6, 8, bitmap);  // Page 7 = bottom row
     }
 #endif // XTP_DISPLAY_TICK
 #endif // DISABLE_OLED

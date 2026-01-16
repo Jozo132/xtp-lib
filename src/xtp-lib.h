@@ -66,6 +66,7 @@ void xtp_setup() {
 void xtp_loop() {
   // IntervalGlobalLoopCheck();
   IWatchdog.reload();
+  i2c_loop();                   // I2C bus maintenance & auto-recovery
   oled_state_machine_update();  // Non-blocking OLED updates
   ethernet_loop();
   ota_loop();

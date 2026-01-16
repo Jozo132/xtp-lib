@@ -325,6 +325,44 @@ void i2c_setup() {
 }
 
 // ============================================================================
+// I2C Periodic Maintenance (call from main loop)
+// ============================================================================
+
+// Auto-recovery interval (ms) - how often to try recovery when bus has errors
+#ifndef I2C_AUTO_RECOVERY_INTERVAL_MS
+#define I2C_AUTO_RECOVERY_INTERVAL_MS 5000
+#endif
+
+static uint32_t i2c_last_recovery_attempt = 0;
+
+void i2c_loop() {
+    if (!i2c_initialized) return;
+    
+    uint32_t now = millis();
+    
+    // Periodic bus recovery when in error state
+    if (i2cBus.busError) {
+        if (now - i2c_last_recovery_attempt >= I2C_AUTO_RECOVERY_INTERVAL_MS) {
+            i2c_last_recovery_attempt = now;
+            Serial.println("[I2C] Auto-recovery triggered");
+            i2c_bus_recovery();
+        }
+    }
+    
+    // Reset device error states periodically to allow retry
+    for (int i = 0; i < i2cBus.deviceCount; i++) {
+        I2CDevice* dev = &i2cBus.devices[i];
+        if (dev->state == I2C_DEV_ERROR) {
+            if (now - dev->lastCheckTime >= I2C_RECOVERY_INTERVAL_MS) {
+                // Allow retry - device will be probed again
+                dev->state = I2C_DEV_NOT_PRESENT;
+                dev->errorCount = 0;
+            }
+        }
+    }
+}
+
+// ============================================================================
 // Core I2C Transaction Helpers (with error tracking)
 // ============================================================================
 

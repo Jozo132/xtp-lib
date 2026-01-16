@@ -160,6 +160,16 @@ void display_state_msg(const char* message) {
     oled_print(msg, 1, 6);
 }
 
+// Refresh all network info on OLED (called on OLED reconnect)
+void refresh_network_display() {
+    // Display MAC address at bottom row (leave column 0 for spinner)
+    sprintf(msg, "%s", mac_address);
+    oled_print(msg, 1, 7);
+    
+    // Display IP address above MAC
+    update_ip_status();
+}
+
 // ============================================================================
 // Non-blocking Reset Functions
 // ============================================================================
@@ -583,6 +593,9 @@ void ethernet_setup() {
     if (ethernet_has_initialized) return;
     ethernet_has_initialized = true;
     
+    // Set up OLED reconnect callback to refresh network display
+    oled_set_reconnect_callback(refresh_network_display);
+    
     oled_print("Starting up ... ", 0, 0);
 
     local_mac[0] = 0x1E;
@@ -601,9 +614,9 @@ void ethernet_setup() {
     sprintf(DEFAULT_DEVICE_NAME, "%s-%02X%02X%02X%02X%02X", DEVICE_NAME, local_mac[1], local_mac[2], local_mac[3], local_mac[4], local_mac[5]);
 
     sprintf(mac_address, "%02x:%02x:%02x:%02x:%02x:%02x", local_mac[0], local_mac[1], local_mac[2], local_mac[3], local_mac[4], local_mac[5]);
-    sprintf(msg, " %s", mac_address);
+    sprintf(msg, "%s", mac_address);
     IWatchdog.reload();
-    oled_print(msg, 0, 7);
+    oled_print(msg, 1, 7);  // Start at column 1 to leave room for spinner at column 0
     
     // Initialize state machine
     ethState.state = ETH_STATE_INIT_START;
