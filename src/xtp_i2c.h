@@ -98,7 +98,7 @@
  * ============================================================================
  * 
  *   #define I2C_TIMEOUT_MS 10              - Transaction timeout (ms)
- *   #define I2C_RECOVERY_INTERVAL_MS 2000  - Retry interval for failed devices
+ *   #define I2C_RECOVERY_INTERVAL_MS 1000  - Retry interval for failed devices (1 second)
  *   #define I2C_MAX_DEVICES 8              - Maximum tracked devices
  * 
  * ============================================================================
@@ -126,7 +126,7 @@
 #endif
 
 #ifndef I2C_RECOVERY_INTERVAL_MS
-#define I2C_RECOVERY_INTERVAL_MS 2000  // How often to retry failed devices
+#define I2C_RECOVERY_INTERVAL_MS 1000  // How often to retry failed/disconnected devices (1 second)
 #endif
 
 #ifndef I2C_MAX_DEVICES

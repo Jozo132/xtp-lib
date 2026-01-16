@@ -260,6 +260,107 @@ static const uint8_t PROGMEM xtp_font_6x8[] = {
 };
 
 // ============================================================================
+// Extended Characters (UTF-8 mapped to custom indices)
+// ============================================================================
+// These characters are outside ASCII but commonly used
+// We map them to indices 128+ for lookup
+
+static const uint8_t PROGMEM xtp_font_extended[] = {
+    // ° (degree symbol) - index 0
+    0x00, 0x06, 0x09, 0x09, 0x06, 0x00,
+    // € (euro) - index 1
+    0x14, 0x3E, 0x55, 0x55, 0x41, 0x00,
+    // č (c with caron) - index 2
+    0x38, 0x45, 0x46, 0x45, 0x20, 0x00,
+    // š (s with caron) - index 3
+    0x48, 0x55, 0x56, 0x55, 0x20, 0x00,
+    // ž (z with caron) - index 4
+    0x44, 0x65, 0x56, 0x4D, 0x44, 0x00,
+    // Č (C with caron) - index 5
+    0x3E, 0x41, 0x42, 0x41, 0x22, 0x00,
+    // Š (S with caron) - index 6
+    0x46, 0x49, 0x4A, 0x49, 0x31, 0x00,
+    // Ž (Z with caron) - index 7
+    0x61, 0x53, 0x4A, 0x45, 0x43, 0x00,
+};
+
+// Map UTF-8 sequences to extended font index
+// Returns: 0-127 for ASCII, 128+ for extended, 255 for unknown
+// Also returns bytes consumed via byteCount pointer
+uint8_t xtp_map_char(const char* str, uint8_t* byteCount) {
+    uint8_t c = (uint8_t)str[0];
+    *byteCount = 1;
+    
+    // Standard ASCII (including special chars already in font)
+    if (c < 128) {
+        // Handle control characters
+        if (c == '\n' || c == '\r' || c == '\t') {
+            return c;  // Return as-is for special handling
+        }
+        if (c < 32) return 127;  // Unknown control char -> block
+        return c;
+    }
+    
+    // UTF-8 multi-byte sequences
+    if (c == 0xC2) {
+        // 2-byte sequence starting with 0xC2
+        uint8_t c2 = (uint8_t)str[1];
+        *byteCount = 2;
+        if (c2 == 0xB0) return 128;  // ° (degree)
+        return 127;  // Unknown
+    }
+    
+    if (c == 0xC4) {
+        // 2-byte sequence starting with 0xC4 (Latin Extended-A)
+        uint8_t c2 = (uint8_t)str[1];
+        *byteCount = 2;
+        if (c2 == 0x8C) return 133;  // Č
+        if (c2 == 0x8D) return 130;  // č
+        return 127;
+    }
+    
+    if (c == 0xC5) {
+        // 2-byte sequence starting with 0xC5 (Latin Extended-A continued)
+        uint8_t c2 = (uint8_t)str[1];
+        *byteCount = 2;
+        if (c2 == 0xA0) return 134;  // Š
+        if (c2 == 0xA1) return 131;  // š
+        if (c2 == 0xBD) return 135;  // Ž
+        if (c2 == 0xBE) return 132;  // ž
+        return 127;
+    }
+    
+    if (c == 0xE2) {
+        // 3-byte sequence starting with 0xE2
+        uint8_t c2 = (uint8_t)str[1];
+        uint8_t c3 = (uint8_t)str[2];
+        *byteCount = 3;
+        if (c2 == 0x82 && c3 == 0xAC) return 129;  // € (euro)
+        return 127;
+    }
+    
+    // Unknown multi-byte sequence - try to skip it
+    if ((c & 0xE0) == 0xC0) *byteCount = 2;
+    else if ((c & 0xF0) == 0xE0) *byteCount = 3;
+    else if ((c & 0xF8) == 0xF0) *byteCount = 4;
+    
+    return 127;  // Unknown -> block
+}
+
+// Get font data for a mapped character
+const uint8_t* xtp_get_font_data(uint8_t mapped) {
+    if (mapped >= 32 && mapped <= 127) {
+        // Standard ASCII
+        return &xtp_font_6x8[(mapped - 32) * 6];
+    } else if (mapped >= 128 && mapped < 128 + 8) {
+        // Extended character
+        return &xtp_font_extended[(mapped - 128) * 6];
+    }
+    // Unknown - return block character
+    return &xtp_font_6x8[(127 - 32) * 6];
+}
+
+// ============================================================================
 // Driver State
 // ============================================================================
 
@@ -267,6 +368,7 @@ struct XTP_SSD1306 {
     uint8_t address = 0x3C;
     uint8_t cursorX = 0;       // Column in pixels (0-127)
     uint8_t cursorPage = 0;    // Page/row (0-7)
+    uint8_t lineStartX = 0;    // Starting X for current line (for \n handling)
     bool initialized = false;
     I2CDevice* device = nullptr;
     
@@ -394,6 +496,7 @@ void xtp_ssd1306_setCursor(uint8_t col, uint8_t row) {
     // Convert character position to pixel position
     xtp_oled.cursorX = col * 6;  // 6 pixels per character
     xtp_oled.cursorPage = row;   // Each row is one page (8 pixels)
+    xtp_oled.lineStartX = xtp_oled.cursorX;  // Remember starting column for \n
     
     // Clamp
     if (xtp_oled.cursorX >= SSD1306_WIDTH) xtp_oled.cursorX = 0;
@@ -404,6 +507,7 @@ void xtp_ssd1306_setCursor(uint8_t col, uint8_t row) {
 void xtp_ssd1306_setCursorPixel(uint8_t x, uint8_t page) {
     xtp_oled.cursorX = x;
     xtp_oled.cursorPage = page / 8;  // Convert y to page
+    xtp_oled.lineStartX = xtp_oled.cursorX;  // Remember starting column for \n
     
     if (xtp_oled.cursorX >= SSD1306_WIDTH) xtp_oled.cursorX = 0;
     if (xtp_oled.cursorPage >= SSD1306_PAGES) xtp_oled.cursorPage = 0;
@@ -459,49 +563,95 @@ bool xtp_ssd1306_printChar(char c) {
     return true;
 }
 
-// Print a string at current position
+// Print a string at current position (handles \n and UTF-8 extended chars)
 bool xtp_ssd1306_print(const char* str) {
     if (!xtp_oled.initialized || !str) return false;
     
-    // Set initial position
-    if (!xtp_ssd1306_setPosition(xtp_oled.cursorX, xtp_oled.cursorPage)) {
-        return false;
-    }
-    
-    // Build font data for entire string (more efficient)
     size_t len = strlen(str);
     if (len == 0) return true;
     
-    // Limit to what fits on current line
-    size_t maxChars = (SSD1306_WIDTH - xtp_oled.cursorX) / 6;
-    if (len > maxChars) len = maxChars;
-    
-    // Build data buffer
-    uint8_t buffer[128];  // Max one line
-    size_t bufLen = 0;
-    
-    for (size_t i = 0; i < len && bufLen < sizeof(buffer) - 6; i++) {
-        char c = str[i];
-        if (c < 32 || c > 127) c = 127;
+    size_t i = 0;
+    while (i < len) {
+        // Build a buffer of characters until newline or end of line
+        uint8_t buffer[128];
+        size_t bufLen = 0;
+        size_t charsInBuffer = 0;
+        bool hitNewline = false;
         
-        const uint8_t* fontPtr = &xtp_font_6x8[(c - 32) * 6];
-        for (int j = 0; j < 6; j++) {
-            buffer[bufLen++] = pgm_read_byte(&fontPtr[j]);
+        // Set position for this segment
+        if (!xtp_ssd1306_setPosition(xtp_oled.cursorX, xtp_oled.cursorPage)) {
+            return false;
         }
-    }
-    
-    // Send all at once
-    if (!xtp_ssd1306_data(buffer, bufLen)) {
-        return false;
-    }
-    
-    // Advance cursor
-    xtp_oled.cursorX += bufLen;
-    if (xtp_oled.cursorX >= SSD1306_WIDTH) {
-        xtp_oled.cursorX = 0;
-        xtp_oled.cursorPage++;
-        if (xtp_oled.cursorPage >= SSD1306_PAGES) {
-            xtp_oled.cursorPage = 0;
+        
+        size_t maxChars = (SSD1306_WIDTH - xtp_oled.cursorX) / 6;
+        if (maxChars == 0) {
+            // At end of line, wrap first
+            xtp_oled.cursorX = xtp_oled.lineStartX;
+            xtp_oled.cursorPage++;
+            if (xtp_oled.cursorPage >= SSD1306_PAGES) {
+                xtp_oled.cursorPage = 0;
+            }
+            continue;
+        }
+        
+        while (i < len && charsInBuffer < maxChars && bufLen < sizeof(buffer) - 6) {
+            uint8_t byteCount = 1;
+            uint8_t mapped = xtp_map_char(&str[i], &byteCount);
+            
+            // Handle control characters
+            if (mapped == '\n') {
+                i += byteCount;
+                hitNewline = true;
+                break;  // Process buffer, then handle newline
+            } else if (mapped == '\r') {
+                i += byteCount;
+                continue;  // Skip carriage return
+            } else if (mapped == '\t') {
+                // Tab = 4 spaces
+                for (int t = 0; t < 4 && charsInBuffer < maxChars && bufLen < sizeof(buffer) - 6; t++) {
+                    const uint8_t* fontPtr = xtp_get_font_data(' ');
+                    for (int j = 0; j < 6; j++) {
+                        buffer[bufLen++] = pgm_read_byte(&fontPtr[j]);
+                    }
+                    charsInBuffer++;
+                }
+                i += byteCount;
+                continue;
+            }
+            
+            // Get font data for this character
+            const uint8_t* fontPtr = xtp_get_font_data(mapped);
+            for (int j = 0; j < 6; j++) {
+                buffer[bufLen++] = pgm_read_byte(&fontPtr[j]);
+            }
+            charsInBuffer++;
+            i += byteCount;
+        }
+        
+        // Send buffer to display
+        if (bufLen > 0) {
+            if (!xtp_ssd1306_data(buffer, bufLen)) {
+                return false;
+            }
+            xtp_oled.cursorX += bufLen;
+        }
+        
+        // Handle newline - move to next line at starting column
+        if (hitNewline) {
+            xtp_oled.cursorX = xtp_oled.lineStartX;
+            xtp_oled.cursorPage++;
+            if (xtp_oled.cursorPage >= SSD1306_PAGES) {
+                xtp_oled.cursorPage = 0;
+            }
+        }
+        
+        // Handle line wrap
+        if (xtp_oled.cursorX >= SSD1306_WIDTH) {
+            xtp_oled.cursorX = xtp_oled.lineStartX;
+            xtp_oled.cursorPage++;
+            if (xtp_oled.cursorPage >= SSD1306_PAGES) {
+                xtp_oled.cursorPage = 0;
+            }
         }
     }
     

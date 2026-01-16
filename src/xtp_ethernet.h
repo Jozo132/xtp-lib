@@ -243,7 +243,7 @@ void ethernet_state_machine_update() {
         // HARD RESET sequence
         // -----------------------------------------------------------------
         case ETH_STATE_HARD_RESET_START: {
-            display_state_msg("HARD RESET");
+            display_state_msg("  HARD RESET  ");
             Serial.println("[ETH] Starting hard reset");
             ethState.lastHardReset = now;
             ethState.linkEstablished = false;
@@ -276,7 +276,7 @@ void ethernet_state_machine_update() {
         // SOFT RESET sequence
         // -----------------------------------------------------------------
         case ETH_STATE_SOFT_RESET_START: {
-            display_state_msg("SOFT RESET");
+            display_state_msg("  SOFT RESET  ");
             Serial.println("[ETH] Starting soft reset");
             ethState.lastSoftReset = now;
             ethState.softResetPollCount = 0;
@@ -307,7 +307,7 @@ void ethernet_state_machine_update() {
         // INITIALIZATION sequence
         // -----------------------------------------------------------------
         case ETH_STATE_INIT_START: {
-            display_state_msg("INIT");
+            display_state_msg("     INIT     ");
             Serial.println("[ETH] Starting initialization");
             ethState.initCycle++;
             
@@ -348,7 +348,7 @@ void ethernet_state_machine_update() {
         
         case ETH_STATE_INIT_DHCP: {
             if (!ethState.dhcpInProgress) {
-                display_state_msg("DHCP");
+                display_state_msg("     DHCP     ");
                 Serial.println("[ETH] Starting DHCP");
                 ethState.dhcpInProgress = true;
                 
@@ -414,7 +414,7 @@ void ethernet_state_machine_update() {
         }
         
         case ETH_STATE_INIT_STATIC: {
-            display_state_msg("STATIC IP");
+            display_state_msg("   STATIC IP  ");
             Serial.println("[ETH] Configuring static IP");
             
             auto& network = retainedData.network;
@@ -442,7 +442,7 @@ void ethernet_state_machine_update() {
         
         case ETH_STATE_INIT_SERVER_START: {
             if (timeInState >= EthernetStateMachine::SERVER_START_DELAY) {
-                display_state_msg("SERVER START");
+                display_state_msg(" SERVER START ");
                 Serial.println("[ETH] Starting server");
                 
                 spi_select(SPI_Ethernet);
@@ -475,7 +475,7 @@ void ethernet_state_machine_update() {
             
             // Update display
             if (timeInState < 100) {
-                display_state_msg("DISCONNECTED");
+                display_state_msg(" DISCONNECTED ");
                 local_ip[0] = 0;
                 local_ip[1] = 0;
                 local_ip[2] = 0;
@@ -503,7 +503,7 @@ void ethernet_state_machine_update() {
         // -----------------------------------------------------------------
         case ETH_STATE_ERROR: {
             if (timeInState < 100) {
-                display_state_msg("ERROR");
+                display_state_msg("    ERROR     ");
                 Serial.println("[ETH] Error state, will retry");
             }
             
