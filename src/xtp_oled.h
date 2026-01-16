@@ -86,9 +86,22 @@ struct OLEDStateMachine {
 
 OLEDStateMachine oledState;
 
-char _oled_data_active[OLED_CHARS + 1] = { 0 };
-char _oled_data_new[OLED_CHARS + 1] = { 0 };
-char _oled_toDraw[OLED_CHARS + 1] = { 0 };
+// Buffers store PRE-MAPPED characters (single bytes, 32-127 for ASCII, 128+ for extended)
+// This avoids UTF-8 multi-byte issues in comparison and display
+uint8_t _oled_data_active[OLED_CHARS + 1];
+uint8_t _oled_data_new[OLED_CHARS + 1];
+uint8_t _oled_toDraw[OLED_CHARS + 1];
+bool _oled_buffers_initialized = false;
+
+void _oled_init_buffers() {
+    if (_oled_buffers_initialized) return;
+    _oled_buffers_initialized = true;
+    memset(_oled_data_active, ' ', OLED_CHARS);
+    memset(_oled_data_new, ' ', OLED_CHARS);
+    _oled_data_active[OLED_CHARS] = 0;
+    _oled_data_new[OLED_CHARS] = 0;
+    _oled_toDraw[OLED_CHARS] = 0;
+}
 
 bool oled_initialized = false;
 bool oled_force_redraw = false;
@@ -134,6 +147,9 @@ bool oled_check_presence() {
 void oled_setup() {
     if (oled_initialized) return;
     oled_initialized = true;
+    
+    // Initialize buffers with spaces
+    _oled_init_buffers();
     
 #ifndef DISABLE_OLED
     // Try to initialize the display (xtp_ssd1306_init handles device registration)
@@ -241,15 +257,15 @@ void oled_state_machine_update() {
                     }
                     
                     int i = oledState.updatePosition;
-                    char a = _oled_data_active[i];
-                    char b = _oled_data_new[i];
+                    uint8_t a = _oled_data_active[i];
+                    uint8_t b = _oled_data_new[i];
                     
                     if (a != b) {
                         _oled_data_active[i] = b;
                         int x = i % OLED_COLS;
                         int y = i / OLED_COLS;
                         
-                        // Find consecutive characters to update
+                        // Find consecutive characters to update (on same row)
                         int j = i;
                         int unchanged = 0;
                         while (j < OLED_CHARS) {
@@ -264,11 +280,13 @@ void oled_state_machine_update() {
                             _oled_data_active[j] = _oled_data_new[j];
                             j++;
                         }
-                        _oled_toDraw[j - i] = 0;
                         
-                        // Write to display using our non-blocking driver
+                        // Count how many characters to write
+                        size_t count = j - i;
+                        
+                        // Write pre-mapped characters directly (no UTF-8 re-parsing)
                         xtp_ssd1306_setCursor(x, y);  // Character coordinates
-                        bool writeOk = xtp_ssd1306_print(_oled_toDraw);
+                        bool writeOk = xtp_ssd1306_printMappedBuffer(_oled_toDraw, count);
                         
                         // Check the write time from our driver
                         uint32_t writeTime = xtp_ssd1306_getLastWriteTime();
@@ -415,30 +433,75 @@ void oled_state_machine_update() {
 // ============================================================================
 
 // Queue a message for display (non-blocking)
+// Pre-maps UTF-8 characters to single-byte indices for consistent buffer handling
 void displayMsg(const char* message) {
 #ifndef DISABLE_OLED
-    if (!oled_initialized) return;
+    if (!oled_initialized) {
+        _oled_init_buffers();
+    }
     if (!oledState.isReady() && oledState.state != OLED_STATE_DISCONNECTED) return;
     
-    int len = strlen(message);
-    for (int i = 0; i < len && i < OLED_CHARS; i++) {
-        _oled_data_new[i] = message[i];
+    size_t len = strlen(message);
+    int index = 0;
+    size_t i = 0;
+    while (i < len && index < OLED_CHARS) {
+        uint8_t byteCount = 1;
+        uint8_t mapped = xtp_map_char(&message[i], &byteCount);
+        
+        // Handle newlines - move to next row
+        if (mapped == '\n') {
+            int currentRow = index / OLED_COLS;
+            index = (currentRow + 1) * OLED_COLS;
+            if (index >= OLED_CHARS) break;
+        } else if (mapped == '\r') {
+            // Skip carriage return
+        } else if (mapped == '\t') {
+            for (int t = 0; t < 4 && index < OLED_CHARS; t++) {
+                _oled_data_new[index++] = ' ';
+            }
+        } else {
+            _oled_data_new[index++] = mapped;
+        }
+        i += byteCount;
     }
     // State machine will handle the actual update
 #endif
 }
 
 // Queue text at position (non-blocking)
+// Pre-maps UTF-8 characters to single-byte indices for consistent buffer handling
 void oled_print(const char* message, int x, int y) {
 #ifndef DISABLE_OLED
-    if (!oled_initialized) return;
+    if (!oled_initialized) {
+        _oled_init_buffers();  // Ensure buffers ready even before full init
+    }
     // Accept prints even when disconnected - they'll be shown when reconnected
     
-    int len = strlen(message);
+    size_t len = strlen(message);
     int index = x + y * OLED_COLS;
-    for (int i = 0; i < len; i++) {
-        if (index >= OLED_CHARS) break;
-        _oled_data_new[index++] = message[i];
+    size_t i = 0;
+    while (i < len && index < OLED_CHARS) {
+        uint8_t byteCount = 1;
+        uint8_t mapped = xtp_map_char(&message[i], &byteCount);
+        
+        // Skip control characters except handle \n as move to next line
+        if (mapped == '\n') {
+            // Move to start of next line
+            int currentRow = index / OLED_COLS;
+            index = (currentRow + 1) * OLED_COLS;
+            if (index >= OLED_CHARS) break;
+        } else if (mapped == '\r' || mapped == '\t') {
+            // Skip carriage return, handle tab as spaces
+            if (mapped == '\t') {
+                for (int t = 0; t < 4 && index < OLED_CHARS; t++) {
+                    _oled_data_new[index++] = ' ';
+                }
+            }
+        } else {
+            // Store pre-mapped character (single byte, handles ASCII and extended)
+            _oled_data_new[index++] = mapped;
+        }
+        i += byteCount;
     }
     // State machine will handle the actual update
 #endif

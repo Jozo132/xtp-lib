@@ -549,7 +549,79 @@ bool xtp_ssd1306_setPosition(uint8_t x, uint8_t page) {
     return true;
 }
 
-// Print a single character at current position
+// Print a single pre-mapped character at current position
+// Accepts: 32-127 for ASCII, 128+ for extended chars (from xtp_map_char)
+bool xtp_ssd1306_printMapped(uint8_t mapped) {
+    if (!xtp_oled.initialized) return false;
+    
+    // Get font data for mapped character (handles both ASCII and extended)
+    const uint8_t* fontPtr = xtp_get_font_data(mapped);
+    uint8_t charData[6];
+    for (int i = 0; i < 6; i++) {
+        charData[i] = pgm_read_byte(&fontPtr[i]);
+    }
+    
+    // Set position and write
+    if (!xtp_ssd1306_setPosition(xtp_oled.cursorX, xtp_oled.cursorPage)) {
+        return false;
+    }
+    
+    if (!xtp_ssd1306_data(charData, 6)) {
+        return false;
+    }
+    
+    // Advance cursor
+    xtp_oled.cursorX += 6;
+    if (xtp_oled.cursorX >= SSD1306_WIDTH) {
+        xtp_oled.cursorX = 0;
+        xtp_oled.cursorPage++;
+        if (xtp_oled.cursorPage >= SSD1306_PAGES) {
+            xtp_oled.cursorPage = 0;
+        }
+    }
+    
+    return true;
+}
+
+// Print multiple pre-mapped characters at current position
+// Buffer contains pre-mapped values (not UTF-8), count is number of characters
+bool xtp_ssd1306_printMappedBuffer(const uint8_t* mapped, size_t count) {
+    if (!xtp_oled.initialized || !mapped || count == 0) return false;
+    
+    // Build font data buffer for all characters
+    uint8_t buffer[128];
+    size_t bufLen = 0;
+    
+    // Set position once for the whole sequence
+    if (!xtp_ssd1306_setPosition(xtp_oled.cursorX, xtp_oled.cursorPage)) {
+        return false;
+    }
+    
+    for (size_t i = 0; i < count && bufLen < sizeof(buffer) - 6; i++) {
+        const uint8_t* fontPtr = xtp_get_font_data(mapped[i]);
+        for (int j = 0; j < 6; j++) {
+            buffer[bufLen++] = pgm_read_byte(&fontPtr[j]);
+        }
+    }
+    
+    if (!xtp_ssd1306_data(buffer, bufLen)) {
+        return false;
+    }
+    
+    // Advance cursor
+    xtp_oled.cursorX += bufLen;
+    if (xtp_oled.cursorX >= SSD1306_WIDTH) {
+        xtp_oled.cursorX = xtp_oled.cursorX % SSD1306_WIDTH;
+        xtp_oled.cursorPage++;
+        if (xtp_oled.cursorPage >= SSD1306_PAGES) {
+            xtp_oled.cursorPage = 0;
+        }
+    }
+    
+    return true;
+}
+
+// Print a single character at current position (legacy - for ASCII only)
 bool xtp_ssd1306_printChar(char c) {
     if (!xtp_oled.initialized) return false;
     
