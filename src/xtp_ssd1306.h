@@ -285,11 +285,15 @@ static const uint8_t PROGMEM xtp_font_extended[] = {
 };
 
 // Map UTF-8 sequences to extended font index
-// Returns: 0-127 for ASCII, 128+ for extended, 255 for unknown
+// Returns: 0-127 for ASCII, 128+ for extended, 127 for unknown
 // Also returns bytes consumed via byteCount pointer
+// Safe: checks for null terminators before reading continuation bytes
 uint8_t xtp_map_char(const char* str, uint8_t* byteCount) {
     uint8_t c = (uint8_t)str[0];
     *byteCount = 1;
+    
+    // Null terminator
+    if (c == 0) return ' ';  // Return space for null
     
     // Standard ASCII (including special chars already in font)
     if (c < 128) {
@@ -301,50 +305,61 @@ uint8_t xtp_map_char(const char* str, uint8_t* byteCount) {
         return c;
     }
     
-    // UTF-8 multi-byte sequences
-    if (c == 0xC2) {
-        // 2-byte sequence starting with 0xC2
+    // Check for valid UTF-8 continuation byte (0x80-0xBF)
+    #define IS_CONT(x) (((x) & 0xC0) == 0x80)
+    
+    // UTF-8 2-byte sequences (0xC0-0xDF lead byte)
+    if ((c & 0xE0) == 0xC0) {
         uint8_t c2 = (uint8_t)str[1];
+        if (c2 == 0 || !IS_CONT(c2)) {
+            // Truncated or invalid - consume only lead byte
+            return 127;
+        }
         *byteCount = 2;
-        if (c2 == 0xB0) return 128;  // ° (degree)
-        return 127;  // Unknown
+        
+        // Match specific characters
+        if (c == 0xC2 && c2 == 0xB0) return 128;  // ° (degree)
+        if (c == 0xC4 && c2 == 0x8C) return 133;  // Č
+        if (c == 0xC4 && c2 == 0x8D) return 130;  // č
+        if (c == 0xC5 && c2 == 0xA0) return 134;  // Š
+        if (c == 0xC5 && c2 == 0xA1) return 131;  // š
+        if (c == 0xC5 && c2 == 0xBD) return 135;  // Ž
+        if (c == 0xC5 && c2 == 0xBE) return 132;  // ž
+        return 127;  // Unknown 2-byte sequence
     }
     
-    if (c == 0xC4) {
-        // 2-byte sequence starting with 0xC4 (Latin Extended-A)
+    // UTF-8 3-byte sequences (0xE0-0xEF lead byte)
+    if ((c & 0xF0) == 0xE0) {
         uint8_t c2 = (uint8_t)str[1];
-        *byteCount = 2;
-        if (c2 == 0x8C) return 133;  // Č
-        if (c2 == 0x8D) return 130;  // č
-        return 127;
-    }
-    
-    if (c == 0xC5) {
-        // 2-byte sequence starting with 0xC5 (Latin Extended-A continued)
-        uint8_t c2 = (uint8_t)str[1];
-        *byteCount = 2;
-        if (c2 == 0xA0) return 134;  // Š
-        if (c2 == 0xA1) return 131;  // š
-        if (c2 == 0xBD) return 135;  // Ž
-        if (c2 == 0xBE) return 132;  // ž
-        return 127;
-    }
-    
-    if (c == 0xE2) {
-        // 3-byte sequence starting with 0xE2
-        uint8_t c2 = (uint8_t)str[1];
+        if (c2 == 0 || !IS_CONT(c2)) return 127;
         uint8_t c3 = (uint8_t)str[2];
+        if (c3 == 0 || !IS_CONT(c3)) {
+            *byteCount = 2;  // Consume what we validated
+            return 127;
+        }
         *byteCount = 3;
-        if (c2 == 0x82 && c3 == 0xAC) return 129;  // € (euro)
+        
+        // € (euro) = E2 82 AC
+        if (c == 0xE2 && c2 == 0x82 && c3 == 0xAC) return 129;
         return 127;
     }
     
-    // Unknown multi-byte sequence - try to skip it
-    if ((c & 0xE0) == 0xC0) *byteCount = 2;
-    else if ((c & 0xF0) == 0xE0) *byteCount = 3;
-    else if ((c & 0xF8) == 0xF0) *byteCount = 4;
+    // UTF-8 4-byte sequences (0xF0-0xF7 lead byte) - skip them
+    if ((c & 0xF8) == 0xF0) {
+        uint8_t c2 = (uint8_t)str[1];
+        if (c2 == 0 || !IS_CONT(c2)) return 127;
+        uint8_t c3 = (uint8_t)str[2];
+        if (c3 == 0 || !IS_CONT(c3)) { *byteCount = 2; return 127; }
+        uint8_t c4 = (uint8_t)str[3];
+        if (c4 == 0 || !IS_CONT(c4)) { *byteCount = 3; return 127; }
+        *byteCount = 4;
+        return 127;  // No 4-byte chars supported
+    }
     
-    return 127;  // Unknown -> block
+    #undef IS_CONT
+    
+    // Invalid lead byte (0x80-0xBF or 0xF8-0xFF) - skip single byte
+    return 127;
 }
 
 // Get font data for a mapped character
