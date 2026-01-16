@@ -360,11 +360,10 @@ void i2c_loop() {
     // Reset device error states periodically to allow retry
     for (int i = 0; i < i2cBus.deviceCount; i++) {
         I2CDevice* dev = &i2cBus.devices[i];
-        if (dev->state == I2C_DEV_ERROR) {
+        if (dev->state == I2C_DEV_ERROR || dev->state == I2C_DEV_NOT_PRESENT) {
             if (now - dev->lastCheckTime >= I2C_RECOVERY_INTERVAL_MS) {
-                // Allow retry - device will be probed again
-                dev->state = I2C_DEV_NOT_PRESENT;
-                dev->errorCount = 0;
+                // Allow retry - reset to unknown so next probe is fresh
+                dev->state = I2C_DEV_UNKNOWN;
             }
         }
     }
