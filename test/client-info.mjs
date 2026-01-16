@@ -117,13 +117,11 @@ async function main() {
     
     // Common API endpoints to try
     const endpoints = [
-        { path: '/', description: 'Root page' },
-        { path: '/api/status', description: 'API Status' },
-        { path: '/api/info', description: 'Device Info' },
+        { path: '/ping', description: 'Ping' },
+        { path: '/api/socket-status', description: 'Socket Status' },
+        { path: '/api/network-status', description: 'Device Info' },
         { path: '/api/i2c-status', description: 'I2C Bus Status' },
-        { path: '/api/ethernet', description: 'Ethernet Status' },
-        { path: '/api/oled', description: 'OLED Status' },
-        { path: '/api/sockets', description: 'Socket Status' },
+        { path: '/api/oled-status', description: 'OLED Status' },
     ];
     
     log.header('Fetching endpoints...');
