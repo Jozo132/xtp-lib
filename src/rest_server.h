@@ -62,6 +62,17 @@ enum HTTPMethod { HTTP_GET, HTTP_POST };
 // DIY implementation of a REST server
 class RestServer {
 public:
+    // State machine states - declared first so all methods can use them
+    enum State { 
+        WAITING,           // Waiting for new client connection
+        RECEIVING,         // Receiving request headers and body
+        PROCESSING,        // Matching endpoint
+        HANDLING,          // Executing handler
+        FAILED,            // No matching endpoint found
+        CLOSING,           // Gracefully closing connection
+        FORCE_CLOSING      // Force closing stuck connection
+    };
+    
     EthernetServer* server;
     uint32_t _requests_success = 0;
     uint32_t _requests_failed = 0;
@@ -107,6 +118,12 @@ public:
     uint32_t _last_socket_cleanup = 0;
     uint32_t _server_restart_count = 0;
     uint8_t _server_socket = 0xFF;        // Track which socket the server is using
+    
+    // State machine variables
+    uint32_t _last_ms = 0;
+    uint32_t _state_entered_ms = 0;
+    State state = WAITING;
+    EthernetClient client;
     
     RestServer(EthernetServer& server) { this->server = &server; }
     void begin() { _last_socket_cleanup = millis(); }
@@ -316,20 +333,6 @@ public:
     }
 
     // Handle incoming requests with a state machine to avoid blocking the event loop of the microcontroller
-    enum State { 
-        WAITING,           // Waiting for new client connection
-        RECEIVING,         // Receiving request headers and body
-        PROCESSING,        // Matching endpoint
-        HANDLING,          // Executing handler
-        FAILED,            // No matching endpoint found
-        CLOSING,           // Gracefully closing connection
-        FORCE_CLOSING      // Force closing stuck connection
-    };
-    uint32_t _last_ms = 0;
-    uint32_t _state_entered_ms = 0;
-    State state = WAITING;
-    EthernetClient client;
-    
     void handleClient() {
         uint32_t t = millis();
         
