@@ -2,6 +2,9 @@
 
 #include <Arduino.h>
 
+// Include timing telemetry header early (before other headers use it)
+#include "xtp_timing.h"
+
 #ifdef XTP_12A6_E
 #define XTP_DEVICE_NAME "XTP12A6E"
 #endif // XTP_DEVICE_NAME
@@ -40,6 +43,7 @@
 void xtp_setup() {
   IWatchdog.begin(60000000L);
   IWatchdog.reload();
+  XTP_TIMING_INIT();  // Initialize timing telemetry
   gpio_setup();
   for (int i = 0; i < 10; i++) {
     digitalToggle(LED_BUILTIN);
@@ -64,11 +68,29 @@ void xtp_setup() {
 }
 
 void xtp_loop() {
-  // IntervalGlobalLoopCheck();
+  XTP_TIMING_START(XTP_TIME_LOOP_TOTAL);
+  
   IWatchdog.reload();
+  
+  XTP_TIMING_START(XTP_TIME_I2C_LOOP);
   i2c_loop();                   // I2C bus maintenance & auto-recovery
+  XTP_TIMING_END(XTP_TIME_I2C_LOOP);
+  
+  XTP_TIMING_START(XTP_TIME_OLED_UPDATE);
   oled_state_machine_update();  // Non-blocking OLED updates
+  XTP_TIMING_END(XTP_TIME_OLED_UPDATE);
+  
+  XTP_TIMING_START(XTP_TIME_ETH_LOOP);
   ethernet_loop();
+  XTP_TIMING_END(XTP_TIME_ETH_LOOP);
+  
+  XTP_TIMING_START(XTP_TIME_OTA_LOOP);
   ota_loop();
+  XTP_TIMING_END(XTP_TIME_OTA_LOOP);
+  
+  XTP_TIMING_START(XTP_TIME_OLED_TICKER);
   oled_ticker();
+  XTP_TIMING_END(XTP_TIME_OLED_TICKER);
+  
+  XTP_TIMING_END(XTP_TIME_LOOP_TOTAL);
 }

@@ -3,6 +3,7 @@
 
 #include <Ethernet.h>
 #include <utility/w5100.h>
+#include "xtp_timing.h"
 
 #define HTTP_MAX_ARGS 32
 #define HTTP_MAX_ENDPOINTS 32
@@ -33,16 +34,25 @@ static uint8_t _cached_socket_status[8] = {0};
 static uint16_t _cached_socket_port[8] = {0};
 static uint32_t _last_socket_cache_update = 0;
 
+// Socket cache update interval in milliseconds - tune for performance vs accuracy
+#ifndef HTTP_SOCKET_CACHE_INTERVAL_MS
+#define HTTP_SOCKET_CACHE_INTERVAL_MS 50
+#endif
+
 // Update cached socket status (call periodically to avoid SPI overhead)
 inline void updateSocketStatusCache() {
     uint32_t now = millis();
-    if (now - _last_socket_cache_update < 100) return; // Update every 100ms max
+    if (now - _last_socket_cache_update < HTTP_SOCKET_CACHE_INTERVAL_MS) return;
+    
+    XTP_TIMING_START(XTP_TIME_SOCKET_CACHE);
     _last_socket_cache_update = now;
     
+    // Batch read all 8 sockets in one go
     for (uint8_t sock = 0; sock < 8; sock++) {
         _cached_socket_status[sock] = W5100.readSnSR(sock);
         _cached_socket_port[sock] = W5100.readSnPORT(sock);
     }
+    XTP_TIMING_END(XTP_TIME_SOCKET_CACHE);
 }
 
 // Get cached socket status
@@ -159,6 +169,8 @@ public:
     void cleanupStuckSockets() {
         uint32_t now = millis();
         if (now - _last_socket_cleanup < HTTP_SOCKET_CLEANUP_INTERVAL_MS) return;
+        
+        XTP_TIMING_START(XTP_TIME_SOCKET_CLEANUP);
         _last_socket_cleanup = now;
         
         uint8_t listening_sockets = 0;
@@ -220,6 +232,7 @@ public:
         if (stuck_sockets > 0) {
             Serial.printf("[HTTP] Cleaned up %d stuck socket(s)\n", stuck_sockets);
         }
+        XTP_TIMING_END(XTP_TIME_SOCKET_CLEANUP);
     }
     
     // Safe client stop with verification (non-blocking version)
@@ -334,6 +347,7 @@ public:
 
     // Handle incoming requests with a state machine to avoid blocking the event loop of the microcontroller
     void handleClient() {
+        XTP_TIMING_START(XTP_TIME_HTTP_HANDLE);
         uint32_t t = millis();
         
         // Periodic socket health check
@@ -348,11 +362,15 @@ public:
             }
             
             client = server->available();
-            if (!client) return;
+            if (!client) {
+                XTP_TIMING_END(XTP_TIME_HTTP_HANDLE);
+                return;
+            }
             
             // Verify client is actually connected
             if (!client.connected()) {
                 forceClientClose();
+                XTP_TIMING_END(XTP_TIME_HTTP_HANDLE);
                 return;
             }
             
@@ -367,6 +385,7 @@ public:
                 Serial.printf("[HTTP] Timeout in RECEIVING after %lu ms\n", t - _last_ms);
                 _requests_failed++;
                 initiateClientClose();
+                XTP_TIMING_END(XTP_TIME_HTTP_HANDLE);
                 return;
             }
             
@@ -374,12 +393,17 @@ public:
             if (!client.connected()) {
                 Serial.println("[HTTP] Client disconnected during RECEIVING");
                 forceClientClose();
+                XTP_TIMING_END(XTP_TIME_HTTP_HANDLE);
                 return;
             }
             
             // Wait for data to arrive (non-blocking)
-            if (!client.available()) return;
+            if (!client.available()) {
+                XTP_TIMING_END(XTP_TIME_HTTP_HANDLE);
+                return;
+            }
             
+            XTP_TIMING_START(XTP_TIME_HTTP_RECEIVE);
             {
                 char method[16];
                 Serial.printf("[%d.%d.%d.%d]: ", _ip[0], _ip[1], _ip[2], _ip[3]);
@@ -409,6 +433,7 @@ public:
                     client.print("\r\n");
                     _requests_failed++;
                     initiateClientClose();
+                    XTP_TIMING_END(XTP_TIME_HTTP_HANDLE);
                     return;
                 }
                 
@@ -480,6 +505,7 @@ public:
                     body[body_length] = '\0';
                 }
             }
+            XTP_TIMING_END(XTP_TIME_HTTP_RECEIVE);
             _last_ms = t;
             enterState(PROCESSING);
             break;
@@ -490,6 +516,7 @@ public:
                 Serial.printf("[HTTP] Timeout in PROCESSING after %lu ms\n", t - _last_ms);
                 _requests_failed++;
                 initiateClientClose();
+                XTP_TIMING_END(XTP_TIME_HTTP_HANDLE);
                 return;
             }
             
@@ -497,6 +524,7 @@ public:
             if (!client.connected()) {
                 Serial.println("[HTTP] Client disconnected before processing");
                 forceClientClose();
+                XTP_TIMING_END(XTP_TIME_HTTP_HANDLE);
                 return;
             }
             
@@ -522,7 +550,9 @@ public:
                         uint32_t handler_start = millis();
                         
                         // Execute handler
+                        XTP_TIMING_START(XTP_TIME_HTTP_HANDLER);
                         endpoint.handler();
+                        XTP_TIMING_END(XTP_TIME_HTTP_HANDLER);
                         
                         uint32_t elapsed_ms = millis() - handler_start;
                         Serial.printf(" - %u bytes in %lu ms\n", _transmitted_bytes, elapsed_ms);
@@ -581,6 +611,7 @@ public:
             break;
             
         } // switch(state)
+        XTP_TIMING_END(XTP_TIME_HTTP_HANDLE);
     } // handleClient
     
     // Get server statistics
@@ -591,6 +622,7 @@ public:
     }
 
     void send(int code, const char* content_type, const char* content, int length) {
+        XTP_TIMING_START(XTP_TIME_HTTP_SEND);
         // Using batched response in chunks of HTTP_RES_CHUNK_SIZE bytes
         for (int i = 0; i < length; i += HTTP_RES_CHUNK_SIZE) {
             int len = length - i;
@@ -600,6 +632,7 @@ public:
             bool done = i + len >= length;
         }
         _transmitted_bytes += length;
+        XTP_TIMING_END(XTP_TIME_HTTP_SEND);
         // client.stop();
     }
 

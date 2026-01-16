@@ -1,6 +1,7 @@
 #pragma once
 
 #include "rest_server.h"
+#include "xtp_timing.h"
 
 RestServer rest(server);
 MyFileSystem files; // Todo: add implementation
@@ -93,6 +94,21 @@ void xtp_rest_routing() {
         i2c_status_json(i2c_status_buffer, sizeof(i2c_status_buffer));
         rest.send(200, "application/json", i2c_status_buffer);
     });
+    
+#ifdef XTP_TIMING_TELEMETRY
+    // Timing telemetry endpoint (only when telemetry is enabled)
+    rest.get("/api/timing", []() {
+        static char timing_buffer[2048];
+        xtp_timing_json(timing_buffer, sizeof(timing_buffer));
+        rest.send(200, "application/json", timing_buffer);
+    });
+    
+    // Reset timing stats
+    rest.post("/api/timing/reset", []() {
+        xtp_timing_reset();
+        rest.send(200, "application/json", "{\"status\":\"reset\"}");
+    });
+#endif
 
     // User provided setup function
     if (rest_setup != nullptr) rest_setup();

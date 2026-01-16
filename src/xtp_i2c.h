@@ -387,7 +387,19 @@ void i2c_bus_recovery_start() {
 
 // Non-blocking: Update recovery state machine (returns true when done)
 bool i2c_bus_recovery_update() {
-    return i2cRecovery.update();
+    bool done = i2cRecovery.update();
+#ifdef XTP_TIMING_TELEMETRY
+    if (done) {
+        // Record the total recovery time when complete
+        extern XtpTimingStats _xtp_timing[];
+        extern bool _xtp_timing_initialized;
+        if (_xtp_timing_initialized) {
+            // Recovery takes ~80-160µs, record approximate time
+            _xtp_timing[XTP_TIME_I2C_RECOVERY].record(i2cRecovery.toggleCount * 10);
+        }
+    }
+#endif
+    return done;
 }
 
 // Check if recovery is in progress
