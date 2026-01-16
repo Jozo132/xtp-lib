@@ -40,6 +40,7 @@ bool xtp_rest_routing_initialized = false;
 
 // Buffer for socket status JSON response
 char socket_status_json[512] = "";
+char eth_status_buffer[384] = "";
 
 void xtp_rest_routing() {
     if (xtp_rest_routing_initialized) return;
@@ -50,6 +51,12 @@ void xtp_rest_routing() {
 
     // Simple ping/pong
     rest.get("/ping", []() { rest.send(200, "text/plain", "pong"); });
+    
+    // Ethernet state machine status endpoint
+    rest.get("/api/network-status", []() {
+        ethernet_status_json(eth_status_buffer, sizeof(eth_status_buffer));
+        rest.send(200, "application/json", eth_status_buffer);
+    });
     
     // Diagnostic endpoint for socket status monitoring
     rest.get("/api/socket-status", []() {
