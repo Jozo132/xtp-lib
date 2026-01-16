@@ -104,9 +104,9 @@ I2CDevice* oled_i2c_device = nullptr;
 #define OLED_SLOW_I2C_THRESHOLD_US  5000   // 5ms is way too long for simple I2C ops
 #define OLED_HEALTH_CHECK_INTERVAL_MS 2000 // Check health every 2s when ready
 
-// Force a fresh I2C presence check (uses our SSD1306 driver)
+// Force a fresh I2C presence check (uses probe - ignores cache)
 bool oled_check_presence_fresh() {
-    return xtp_ssd1306_present();  // Uses i2c_device_present internally
+    return xtp_ssd1306_probe();  // Force actual I2C probe
 }
 
 // Check cached presence (fast, no I2C traffic)
@@ -318,8 +318,8 @@ void oled_state_machine_update() {
                     i2c_bus_recovery();
                 }
                 
-                // Now try to detect the display
-                if (xtp_ssd1306_present()) {
+                // Force an actual I2C probe (ignores cached state) to detect reconnection
+                if (xtp_ssd1306_probe()) {
                     Serial.println("[OLED] Display reconnected - reinitializing...");
                     
                     // Small delay to let the OLED power up properly

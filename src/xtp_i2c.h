@@ -298,8 +298,16 @@ void i2c_bus_recovery() {
     Wire.setClock(I2C_CLOCK);
     Wire.begin();
     
+    // Reset bus error state
     i2cBus.busError = false;
-    Serial.println("[I2C] Bus recovery complete");
+    
+    // Reset ALL device states to allow immediate re-probing
+    for (int i = 0; i < i2cBus.deviceCount; i++) {
+        i2cBus.devices[i].state = I2C_DEV_UNKNOWN;
+        i2cBus.devices[i].lastCheckTime = 0;  // Allow immediate retry
+    }
+    
+    Serial.println("[I2C] Bus recovery complete - device states reset");
 }
 
 // ============================================================================
@@ -387,11 +395,18 @@ uint8_t i2c_check_device(uint8_t address) {
 }
 
 // Check if device is present (simple bool version)
+// Uses cached state if retry interval hasn't elapsed
 bool i2c_device_present(uint8_t address) {
     I2CDevice* dev = i2cBus.findDevice(address);
     if (dev && !dev->shouldRetry()) {
         return dev->isPresent();
     }
+    return i2c_check_device(address) == 0;
+}
+
+// Force an actual I2C probe, ignoring cached state
+// Use this when you need to detect device reconnection
+bool i2c_device_probe(uint8_t address) {
     return i2c_check_device(address) == 0;
 }
 

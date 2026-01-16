@@ -451,9 +451,14 @@ bool xtp_ssd1306_data(const uint8_t* data, size_t len) {
 // Public API
 // ============================================================================
 
-// Check if display is present and responding
+// Check if display is present and responding (uses cached state for efficiency)
 bool xtp_ssd1306_present() {
     return i2c_device_present(xtp_oled.address);
+}
+
+// Force an actual I2C probe to detect reconnection (ignores cache)
+bool xtp_ssd1306_probe() {
+    return i2c_device_probe(xtp_oled.address);
 }
 
 // Initialize the display
