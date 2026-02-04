@@ -6,19 +6,19 @@
 // #define XTP_ADC_USE_PB1
 
 // ADC channel number for PB1 on STM32F411: ADC1_IN9
-#if XTP_ADC_USE_PB1
+#ifdef XTP_ADC_USE_PB1
   #define XTP_ADC_PB1_CH 9
 #endif
 
 // Channel counts per board variant
 #if defined(XTP14A6E)
-  #if XTP_ADC_USE_PB1
+  #ifdef XTP_ADC_USE_PB1
     constexpr uint8_t XTP_ADC_N_CH = 8;   // PA0-PA4 + PC4 + PC5 + PB1
   #else
     constexpr uint8_t XTP_ADC_N_CH = 7;   // PA0-PA4 + PC4 + PC5
   #endif
 #else // XTP12A6E
-  #if XTP_ADC_USE_PB1
+  #ifdef XTP_ADC_USE_PB1
     constexpr uint8_t XTP_ADC_N_CH = 7;   // PA0-PA5 + PB1
   #else
     constexpr uint8_t XTP_ADC_N_CH = 6;   // PA0-PA5
@@ -77,7 +77,7 @@ static void ___XTP_initADC_DMA() {
     GPIOA->MODER |= GPIO_MODER_MODE0 | GPIO_MODER_MODE1 | GPIO_MODER_MODE2 | GPIO_MODER_MODE3 | GPIO_MODER_MODE4;
     GPIOC->MODER |= GPIO_MODER_MODE4 | GPIO_MODER_MODE5;
 
-#if XTP_ADC_USE_PB1
+#ifdef XTP_ADC_USE_PB1
     __HAL_RCC_GPIOB_CLK_ENABLE();
     GPIOB->MODER |= GPIO_MODER_MODE1; // PB1 analog
 #endif
@@ -94,7 +94,7 @@ static void ___XTP_initADC_DMA() {
     // 8:    ch9    (PB1) optional
     ADC1->SQR3 = (0) | (1 << 5) | (2 << 10) | (3 << 15) | (4 << 20) | (15 << 25);
 
-#if XTP_ADC_USE_PB1
+#ifdef XTP_ADC_USE_PB1
     ADC1->SQR2 = (14 << 0) | (XTP_ADC_PB1_CH << 5); // ranks 7..8
 #else
     ADC1->SQR2 = (14 << 0);                         // rank 7
@@ -102,7 +102,7 @@ static void ___XTP_initADC_DMA() {
 
     // Sampling time (keep consistent with your existing choices)
     ADC1->SMPR2 |= (1 << (3 * 14)) | (1 << (3 * 15));
-#if XTP_ADC_USE_PB1
+#ifdef XTP_ADC_USE_PB1
     ADC1->SMPR2 |= (1 << (3 * XTP_ADC_PB1_CH));
 #endif
 
@@ -124,7 +124,7 @@ static inline int xtpAnalogRead(int pin) {
         case ANALOG_4_pin:     return xtpAdcBufSnapshot[4]; // PA4
         case ANALOG_5_pin:     return xtpAdcBufSnapshot[5]; // PC5 (ch15)
         case ANALOG_24V_pin:   return xtpAdcBufSnapshot[6]; // PC4 (ch14)
-#if XTP_ADC_USE_PB1
+#ifdef XTP_ADC_USE_PB1
         case MISC_0_pin:   return xtpAdcBufSnapshot[7]; // PB1 (ch9)
 #endif
         default: return -1;
@@ -143,7 +143,7 @@ static void ___XTP_initADC_DMA() {
     GPIOA->MODER |= GPIO_MODER_MODE0 | GPIO_MODER_MODE1 | GPIO_MODER_MODE2 |
                     GPIO_MODER_MODE3 | GPIO_MODER_MODE4 | GPIO_MODER_MODE5;
 
-#if XTP_ADC_USE_PB1
+#ifdef XTP_ADC_USE_PB1
     __HAL_RCC_GPIOB_CLK_ENABLE();
     GPIOB->MODER |= GPIO_MODER_MODE1; // PB1 analog
 #endif
@@ -158,7 +158,7 @@ static void ___XTP_initADC_DMA() {
     // 7:    ch9    (PB1) optional
     ADC1->SQR3 = (0) | (1 << 5) | (2 << 10) | (3 << 15) | (4 << 20) | (5 << 25);
 
-#if XTP_ADC_USE_PB1
+#ifdef XTP_ADC_USE_PB1
     ADC1->SQR2 = (XTP_ADC_PB1_CH << 0); // rank 7 sits at SQR2[4:0]
 #else
     ADC1->SQR2 = 0;
@@ -167,7 +167,7 @@ static void ___XTP_initADC_DMA() {
     // Sampling time for ch0..5
     ADC1->SMPR2 = (1 << (3 * 0)) | (1 << (3 * 1)) | (1 << (3 * 2)) |
                   (1 << (3 * 3)) | (1 << (3 * 4)) | (1 << (3 * 5));
-#if XTP_ADC_USE_PB1
+#ifdef XTP_ADC_USE_PB1
     ADC1->SMPR2 |= (1 << (3 * XTP_ADC_PB1_CH));
 #endif
 
@@ -188,7 +188,7 @@ static inline int xtpAnalogRead(int pin) {
         case ANALOG_3_pin:     return xtpAdcBufSnapshot[3]; // PA3
         case ANALOG_4_pin:     return xtpAdcBufSnapshot[4]; // PA4
         case ANALOG_5_pin:     return xtpAdcBufSnapshot[5]; // PA5
-#if XTP_ADC_USE_PB1
+#ifdef XTP_ADC_USE_PB1
         case MISC_0_pin:   return xtpAdcBufSnapshot[6]; // PB1 (ch9)
 #endif
         case ANALOG_24V_pin:   return -1;
