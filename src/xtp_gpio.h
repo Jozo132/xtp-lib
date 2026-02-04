@@ -71,6 +71,9 @@ void gpio_setup() {
     pinMode(ANALOG_4_pin, INPUT_ANALOG);
     pinMode(ANALOG_5_pin, INPUT_ANALOG);
     pinMode(ANALOG_24V_pin, INPUT_ANALOG);
+#ifdef XTP_ADC_USE_PB1
+    pinMode(MISC_0_pin, INPUT_ANALOG);
+#endif // XTP_ADC_USE_PB1
 #endif // XTP_ADC_DMA
 
     // pinMode(MISC_0_pin, INPUT);

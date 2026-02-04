@@ -125,7 +125,7 @@ static inline int xtpAnalogRead(int pin) {
         case ANALOG_5_pin:     return xtpAdcBufSnapshot[5]; // PC5 (ch15)
         case ANALOG_24V_pin:   return xtpAdcBufSnapshot[6]; // PC4 (ch14)
 #if XTP_ADC_USE_PB1
-        case ANALOG_PB1_pin:   return xtpAdcBufSnapshot[7]; // PB1 (ch9)
+        case MISC_0_pin:   return xtpAdcBufSnapshot[7]; // PB1 (ch9)
 #endif
         default: return -1;
     }
@@ -189,7 +189,7 @@ static inline int xtpAnalogRead(int pin) {
         case ANALOG_4_pin:     return xtpAdcBufSnapshot[4]; // PA4
         case ANALOG_5_pin:     return xtpAdcBufSnapshot[5]; // PA5
 #if XTP_ADC_USE_PB1
-        case ANALOG_PB1_pin:   return xtpAdcBufSnapshot[6]; // PB1 (ch9)
+        case MISC_0_pin:   return xtpAdcBufSnapshot[6]; // PB1 (ch9)
 #endif
         case ANALOG_24V_pin:   return -1;
         default: return -1;
