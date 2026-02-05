@@ -39,6 +39,9 @@
 
 #include "rest_server.h"
 #include "xtp_http_server.h"
+#ifdef XTP_WEBSOCKETS
+#include "xtp_websocket.h"
+#endif
 
 void xtp_setup() {
   IWatchdog.begin(60000000L);
@@ -64,6 +67,9 @@ void xtp_setup() {
   ota_setup();
   
   web_server_setup();
+#ifdef XTP_WEBSOCKETS
+  xtp_ws_setup(); // Websocket setup
+#endif
   IWatchdog.reload();
 }
 
@@ -82,6 +88,9 @@ void xtp_loop() {
   
   XTP_TIMING_START(XTP_TIME_ETH_LOOP);
   ethernet_loop();
+#ifdef XTP_WEBSOCKETS
+  xtp_ws_loop(); // Websocket loop
+#endif
   XTP_TIMING_END(XTP_TIME_ETH_LOOP);
   
   XTP_TIMING_START(XTP_TIME_OTA_LOOP);

@@ -201,6 +201,9 @@ public:
                                     status == 0x1C || // CLOSE_WAIT
                                     status == 0x1D);  // LAST_ACK
             
+            // Only cleanup socket if it belongs to this HTTP server (port 80)
+            if (port != 80) continue;
+
             if (is_transitional && socket_age > HTTP_SOCKET_STALE_TIMEOUT_MS) {
                 forceCloseSocket(sock);
                 stuck_sockets++;
