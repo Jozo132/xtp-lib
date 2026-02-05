@@ -8,6 +8,18 @@
 #include "xtp_config.h"
 
 // ============================================================================
+// Debug Logging
+// ============================================================================
+
+#ifdef XTP_WS_DEBUG
+  #define WS_LOG(...)   Serial.print(__VA_ARGS__)
+  #define WS_LOGLN(...) Serial.println(__VA_ARGS__)
+#else
+  #define WS_LOG(...)
+  #define WS_LOGLN(...)
+#endif
+
+// ============================================================================
 // Configuration & Constants
 // ============================================================================
 
@@ -379,7 +391,7 @@ private:
                 }
             }
 
-             Serial.println("WS: New Connection Attempt");
+             WS_LOGLN("WS: New Connection Attempt");
             if (newClient.connected()) {
                 int freeSlot = -1;
                 for (int i = 0; i < WS_MAX_CLIENTS; i++) {
@@ -390,14 +402,14 @@ private:
                 }
 
                 if (freeSlot != -1) {
-                    Serial.print("WS: Accepted in slot "); Serial.println(freeSlot);
+                    WS_LOG("WS: Accepted in slot "); WS_LOGLN(freeSlot);
                     clients[freeSlot].init(freeSlot, newClient);
                 } else {
-                    Serial.println("WS: Server Full");
+                    WS_LOGLN("WS: Server Full");
                     newClient.stop();
                 }
             } else {
-                 Serial.println("WS: New conn but not connected?");
+                 WS_LOGLN("WS: New conn but not connected?");
             }
         }
     }
@@ -409,7 +421,7 @@ private:
             // Check connectivity
             if (c.state != WS_DISCONNECTED) {
                 if (!c.client.connected()) {
-                     Serial.print("WS: Client "); Serial.print(i); Serial.println(" discon (socket closed)");
+                     WS_LOG("WS: Client "); WS_LOG(i); WS_LOGLN(" discon (socket closed)");
                      c.disconnect();
                      continue;
                 }
@@ -442,14 +454,14 @@ private:
             if (c.state == WS_CONNECTED) {
                 // Keep-alive ping
                 if (now - c.lastPing > WS_PING_INTERVAL_MS) {
-                    Serial.print("WS: Sending PING to "); Serial.println(i);
+                    WS_LOG("WS: Sending PING to "); WS_LOGLN(i);
                     c.sendFrame(WS_OP_PING, NULL, 0);
                     c.lastPing = now;
                 }
                 
                 // Timeout check moved from handleClientData to here for consistency
                 if (now - c.lastActive > WS_TIMEOUT_MS) {
-                    Serial.print("WS: Client "); Serial.print(i); Serial.println(" timeout (no PONG)");
+                    WS_LOG("WS: Client "); WS_LOG(i); WS_LOGLN(" timeout (no PONG)");
                     c.disconnect();
                 }
             }
@@ -498,13 +510,13 @@ private:
                 
                 line.trim();
                 
-                Serial.print("HS Line: "); Serial.println(line);
+                WS_LOG("HS Line: "); WS_LOGLN(line);
 
                 if (line.length() == 0) {
                     // Empty line found -> End of Headers
                     if (c.handshakeKey.length() > 0) {
                         String acceptKey = WsCrypto::generateAcceptKey(c.handshakeKey);
-                         Serial.print("WS Accept: "); Serial.println(acceptKey);
+                         WS_LOG("WS Accept: "); WS_LOGLN(acceptKey);
                         
                         String response = "HTTP/1.1 101 Switching Protocols\r\n"
                                           "Upgrade: websocket\r\n"
@@ -515,7 +527,7 @@ private:
                         c.client.print(response);
                         c.client.flush();
                         c.state = WS_CONNECTED;
-                         Serial.println("WS: Handshake Complete");
+                         WS_LOGLN("WS: Handshake Complete");
                         
                         // Preserve any frame data that arrived with the handshake
                         int remaining = c.rxIndex - (newlinePos + 1);
@@ -528,7 +540,7 @@ private:
                         return;
                     } else {
                         // Headers ended but no Key?
-                        Serial.println("WS Error: Headers ended but no Key found");
+                        WS_LOGLN("WS Error: Headers ended but no Key found");
                         c.disconnect();
                         return;
                     }
@@ -539,7 +551,7 @@ private:
                 if (lower.startsWith("sec-websocket-key:")) {
                     c.handshakeKey = line.substring(18);
                     c.handshakeKey.trim();
-                     Serial.print("WS Key: "); Serial.println(c.handshakeKey);
+                     WS_LOG("WS Key: "); WS_LOGLN(c.handshakeKey);
                 }
 
                 // Advance scanPos
@@ -561,7 +573,7 @@ private:
 
         // Safety: Prevent buffer overflow if line is too long
         if (c.rxIndex >= WS_RX_BUFFER_SIZE - 1) {
-             Serial.println("WS Error: Header buffer overflow");
+             WS_LOGLN("WS Error: Header buffer overflow");
              c.rxIndex = 0; // Discard garbage
              c.disconnect();
         }
@@ -709,7 +721,7 @@ private:
                 c.disconnect();
                 break;
             case WS_OP_PONG:
-                Serial.println("WS: RX PONG");
+                WS_LOGLN("WS: RX PONG");
                 c.lastActive = millis();
                 break;
         }
@@ -728,7 +740,7 @@ EthernetServer wsEthServer(81);
 WebSocketServer wsServer(wsEthServer);
 
 void xtp_ws_default_handler(WebSocketClient& c, const char* msg, uint16_t len) {
-    Serial.print("WS Msg: "); Serial.println(msg);
+    WS_LOG("WS Msg: "); WS_LOGLN(msg);
 
     // Check for "action":"sub"
     if (strstr(msg, "\"action\"") && strstr(msg, "\"sub\"")) {
@@ -745,13 +757,13 @@ void xtp_ws_default_handler(WebSocketClient& c, const char* msg, uint16_t len) {
                     i++;
                 }
                 
-                Serial.print("WS Sub: "); Serial.println(topic);
+                WS_LOG("WS Sub: "); WS_LOGLN(topic);
 
                 WsSubscription* s = c.getEmptySubscription();
                 if (s) {
                     strncpy(s->topic, topic, 31);
                 } else {
-                    Serial.println("WS Sub Fail: Full");
+                    WS_LOGLN("WS Sub Fail: Full");
                 }
             }
         }
