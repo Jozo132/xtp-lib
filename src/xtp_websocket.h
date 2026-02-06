@@ -699,9 +699,6 @@ private:
             c.rxBuffer[c.rxIndex++] = c.client.read();
             readCount++;
         }
-        if (readCount > 0) {
-            WS_LOG("WS RX: read "); WS_LOG(readCount); WS_LOG(" bytes, total "); WS_LOGLN(c.rxIndex);
-        }
 
         // Process complete frames
         while (c.rxIndex >= 2) {
