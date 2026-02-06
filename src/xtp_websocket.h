@@ -10,9 +10,6 @@
 // Debug Logging
 // ============================================================================
 
-// Temporarily enable debug for troubleshooting
-#define XTP_WS_DEBUG
-
 #ifdef XTP_WS_DEBUG
   #define WS_LOG(...)   Serial.print(__VA_ARGS__)
   #define WS_LOGLN(...) Serial.println(__VA_ARGS__)
@@ -26,7 +23,7 @@
 // ============================================================================
 
 #ifndef WS_MAX_CLIENTS
-#define WS_MAX_CLIENTS 2
+#define WS_MAX_CLIENTS 4
 #endif
 
 #ifndef WS_MAX_SUBS
@@ -51,7 +48,7 @@
 
 // TX buffer for queued outgoing data (per client)
 #ifndef WS_TX_BUFFER_SIZE
-#define WS_TX_BUFFER_SIZE 3072
+#define WS_TX_BUFFER_SIZE 4096
 #endif
 
 // Maximum chunk size per write (W5500 safe limit)
