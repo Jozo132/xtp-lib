@@ -4,12 +4,14 @@
 
 #include <Arduino.h>
 #include <Ethernet.h>
-#include <vector>
 #include "xtp_config.h"
 
 // ============================================================================
 // Debug Logging
 // ============================================================================
+
+// Temporarily enable debug for troubleshooting
+#define XTP_WS_DEBUG
 
 #ifdef XTP_WS_DEBUG
   #define WS_LOG(...)   Serial.print(__VA_ARGS__)
@@ -24,15 +26,15 @@
 // ============================================================================
 
 #ifndef WS_MAX_CLIENTS
-#define WS_MAX_CLIENTS 4
+#define WS_MAX_CLIENTS 2
 #endif
 
 #ifndef WS_MAX_SUBS
-#define WS_MAX_SUBS 16
+#define WS_MAX_SUBS 4
 #endif
 
 #ifndef WS_MAX_PROPS
-#define WS_MAX_PROPS 16
+#define WS_MAX_PROPS 2
 #endif
 
 #ifndef WS_KEY_LEN
@@ -44,14 +46,32 @@
 #endif
 
 #ifndef WS_RX_BUFFER_SIZE
-#define WS_RX_BUFFER_SIZE 2048
+#define WS_RX_BUFFER_SIZE 256
+#endif
+
+// TX buffer for queued outgoing data (per client)
+#ifndef WS_TX_BUFFER_SIZE
+#define WS_TX_BUFFER_SIZE 3072
+#endif
+
+// Maximum chunk size per write (W5500 safe limit)
+#ifndef WS_TX_CHUNK_SIZE
+#define WS_TX_CHUNK_SIZE 1024
+#endif
+
+// Line buffer for streaming header parsing (only needs to hold one header line)
+#ifndef WS_LINE_BUFFER_SIZE
+#define WS_LINE_BUFFER_SIZE 128
 #endif
 
 #define WS_GUID "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 #define WS_PING_INTERVAL_MS 10000
 #define WS_TIMEOUT_MS 30000
 
-// Structs for properties and subscriptions
+// ============================================================================
+// Structs
+// ============================================================================
+
 struct WsProperty {
     char key[WS_KEY_LEN];
     char value[WS_VAL_LEN];
@@ -79,6 +99,59 @@ struct WsSubscription {
 };
 
 // ============================================================================
+// Ring Buffer for TX Queue
+// ============================================================================
+
+class WsTxBuffer {
+public:
+    uint8_t buffer[WS_TX_BUFFER_SIZE];
+    volatile uint16_t head = 0;  // Write position
+    volatile uint16_t tail = 0;  // Read position
+    
+    void reset() {
+        head = tail = 0;
+    }
+    
+    uint16_t available() const {
+        if (head >= tail) return head - tail;
+        return WS_TX_BUFFER_SIZE - tail + head;
+    }
+    
+    uint16_t freeSpace() const {
+        return WS_TX_BUFFER_SIZE - available() - 1;
+    }
+    
+    bool isEmpty() const {
+        return head == tail;
+    }
+    
+    bool write(const uint8_t* data, uint16_t len) {
+        if (len > freeSpace()) return false; // Not enough space
+        
+        for (uint16_t i = 0; i < len; i++) {
+            buffer[head] = data[i];
+            head = (head + 1) % WS_TX_BUFFER_SIZE;
+        }
+        return true;
+    }
+    
+    // Read up to 'len' bytes into 'dest', return actual count read
+    uint16_t read(uint8_t* dest, uint16_t maxLen) {
+        uint16_t count = 0;
+        while (count < maxLen && tail != head) {
+            dest[count++] = buffer[tail];
+            tail = (tail + 1) % WS_TX_BUFFER_SIZE;
+        }
+        return count;
+    }
+    
+    // Peek at data without removing (for debugging)
+    uint8_t peek(uint16_t offset) const {
+        return buffer[(tail + offset) % WS_TX_BUFFER_SIZE];
+    }
+};
+
+// ============================================================================
 // Crypto Helpers (SHA1 + Base64)
 // ============================================================================
 
@@ -99,9 +172,9 @@ private:
         
         uint32_t len = data.length();
         uint64_t bit_len = (uint64_t)len * 8;
-        uint32_t new_len = len + 1; // data + 0x80
-        while ((new_len % 64) != 56) new_len++; // padding 0s
-        new_len += 8; // + 64-bit length
+        uint32_t new_len = len + 1;
+        while ((new_len % 64) != 56) new_len++;
+        new_len += 8;
         
         uint8_t* msg = (uint8_t*)malloc(new_len);
         if (!msg) return;
@@ -110,7 +183,6 @@ private:
         memcpy(msg, data.c_str(), len);
         msg[len] = 0x80;
         
-        // Append 64-bit length (big endian)
         for (int i = 0; i < 8; i++) {
             msg[new_len - 1 - i] = (bit_len >> (i * 8)) & 0xFF;
         }
@@ -120,7 +192,6 @@ private:
             
             for (int i = 0; i < 16; i++) {
                 uint32_t val = block[i];
-                // Swap endianness
                 w[i] = (val << 24) | ((val & 0xFF00) << 8) | ((val >> 8) & 0xFF00) | (val >> 24);
             }
             
@@ -186,13 +257,15 @@ private:
 };
 
 // ============================================================================
-// WebSocket Client
+// WebSocket Client State Machine
 // ============================================================================
 
 enum WsState {
-    WS_DISCONNECTED,
-    WS_HANDSHAKE,
-    WS_CONNECTED
+    WS_DISCONNECTED = 0,
+    WS_HANDSHAKE_RECV,      // Receiving HTTP upgrade request
+    WS_HANDSHAKE_SEND,      // Sending HTTP upgrade response
+    WS_CONNECTED,           // Normal operation
+    WS_CLOSING              // Graceful close in progress
 };
 
 enum WsOpcode {
@@ -214,37 +287,49 @@ public:
     
     WsSubscription subscriptions[WS_MAX_SUBS];
     
-    // RX Buffer for frame reassembly
+    // RX Buffer for frame reassembly (small - only for WS frames after handshake)
     uint8_t rxBuffer[WS_RX_BUFFER_SIZE];
     uint16_t rxIndex = 0;
     
-    // Handshake storage
-    String handshakeKey = "";
+    // Line buffer for streaming handshake parsing
+    char lineBuffer[WS_LINE_BUFFER_SIZE];
+    uint8_t lineIndex = 0;
+    bool sawCR = false;  // Track if we saw \r
+    
+    // TX Ring Buffer for non-blocking sends
+    WsTxBuffer txBuffer;
+    
+    // Handshake - only store the key (24 bytes base64)
+    char wsKey[28];  // Base64 key is 24 chars + null
 
     WebSocketClient() : id(0) {}
 
     void init(uint8_t _id, EthernetClient _client) {
         id = _id;
         client = _client;
-        state = WS_HANDSHAKE;
+        state = WS_HANDSHAKE_RECV;
         lastActive = millis();
         lastPing = millis();
         clearSubscriptions();
         rxIndex = 0;
-        handshakeKey = "";
+        lineIndex = 0;
+        sawCR = false;
+        wsKey[0] = 0;
+        txBuffer.reset();
     }
 
     void disconnect() {
         if (client.connected()) client.stop();
         state = WS_DISCONNECTED;
         clearSubscriptions();
+        txBuffer.reset();
+        rxIndex = 0;
     }
 
     void clearSubscriptions() {
         for (int i = 0; i < WS_MAX_SUBS; i++) subscriptions[i].clear();
     }
     
-    // Add sub helper
     WsSubscription* getEmptySubscription() {
         for (int i = 0; i < WS_MAX_SUBS; i++) {
             if (strlen(subscriptions[i].topic) == 0) return &subscriptions[i];
@@ -252,36 +337,104 @@ public:
         return nullptr;
     }
 
-    // Send a frame
-    void sendFrame(uint8_t opcode, const void* payload, uint16_t length) {
+    // Queue a WebSocket frame for transmission (non-blocking)
+    bool queueFrame(uint8_t opcode, const void* payload, uint16_t length) {
+        if (state != WS_CONNECTED) return false;
+        
+        // Build frame header
+        uint8_t header[4];
+        uint8_t headerLen = 0;
+        
+        header[0] = 0x80 | (opcode & 0x0F); // FIN + Opcode
+        
+        if (length <= 125) {
+            header[1] = (uint8_t)length;
+            headerLen = 2;
+        } else if (length <= 65535) {
+            header[1] = 126;
+            header[2] = (length >> 8) & 0xFF;
+            header[3] = length & 0xFF;
+            headerLen = 4;
+        } else {
+            return false; // Too large
+        }
+        
+        // Check if we have space for header + payload
+        uint16_t totalSize = headerLen + length;
+        if (txBuffer.freeSpace() < totalSize) {
+            WS_LOG("WS TX Full: need "); WS_LOG(totalSize); 
+            WS_LOG(" have "); WS_LOGLN(txBuffer.freeSpace());
+            return false; // TX buffer full, drop frame
+        }
+        
+        // Queue header
+        txBuffer.write(header, headerLen);
+        
+        // Queue payload
+        if (length > 0) {
+            txBuffer.write((const uint8_t*)payload, length);
+        }
+        
+        return true;
+    }
+    
+    bool queueText(const char* text) {
+        return queueFrame(WS_OP_TEXT, text, strlen(text));
+    }
+    
+    // Process TX buffer - send data in chunks (non-blocking)
+    void processTx() {
+        if (txBuffer.isEmpty()) return;
+        if (!client.connected()) return;
+        
+        // Send multiple chunks to drain buffer faster
+        // This helps with large frames like binary sensor data
+        uint8_t chunk[WS_TX_CHUNK_SIZE];
+        int maxChunks = 4; // Send up to 4 chunks per call
+        
+        while (maxChunks-- > 0 && !txBuffer.isEmpty()) {
+            uint16_t toSend = min((uint16_t)WS_TX_CHUNK_SIZE, txBuffer.available());
+            
+            if (toSend > 0) {
+                uint16_t count = txBuffer.read(chunk, toSend);
+                if (count > 0) {
+                    size_t written = client.write(chunk, count);
+                    if (written < count) {
+                        WS_LOG("WS TX partial: "); WS_LOG(written); 
+                        WS_LOG("/"); WS_LOGLN(count);
+                        break; // Socket buffer full, stop for now
+                    }
+                }
+            }
+        }
+    }
+    
+    // Legacy blocking send (for small messages like PONG)
+    void sendFrameBlocking(uint8_t opcode, const void* payload, uint16_t length) {
         if (!client.connected()) return;
         
         uint8_t header[4];
         uint8_t headerLen = 0;
         
-        header[0] = 0x80 | (opcode & 0x0F); // FIN + Opcode at [0]
+        header[0] = 0x80 | (opcode & 0x0F);
         
         if (length <= 125) {
-            header[1] = (uint8_t)length; // Mask = 0
+            header[1] = (uint8_t)length;
             headerLen = 2;
         } else if (length <= 65535) {
-            header[1] = 126; // Mask = 0
+            header[1] = 126;
             header[2] = (length >> 8) & 0xFF;
             header[3] = length & 0xFF;
             headerLen = 4;
         } else {
-            // Jumbo frames not supported in this simple impl
-            return; 
+            return;
         }
         
-        // Single write call preferred for W5500 packet fragmentation avoidance
         client.write(header, headerLen);
-        if (length > 0) client.write((const uint8_t*)payload, length);
-        client.flush(); // Force send ensuring PINGs aren't buffered forever
-    }
-    
-    void sendText(const char* text) {
-        sendFrame(WS_OP_TEXT, text, strlen(text));
+        if (length > 0) {
+            client.write((const uint8_t*)payload, length);
+        }
+        client.flush();
     }
 };
 
@@ -304,72 +457,116 @@ public:
         onMessageCallback = handler;
     }
 
-    void begin() {
-        // Assume server.begin() called externally if shared
-        // server->begin(); 
-    }
+    void begin() {}
 
     void loop() {
         handleNewClients();
-        handleClientData();
-        checkTimeouts();
+        
+        for (int i = 0; i < WS_MAX_CLIENTS; i++) {
+            WebSocketClient& c = clients[i];
+            if (c.state == WS_DISCONNECTED) continue;
+            
+            // Check connection
+            if (!c.client.connected()) {
+                WS_LOG("WS: Client "); WS_LOG(i); WS_LOGLN(" disconnected");
+                c.disconnect();
+                continue;
+            }
+            
+            // State machine
+            switch (c.state) {
+                case WS_HANDSHAKE_RECV:
+                    processHandshakeRecv(c);
+                    break;
+                    
+                case WS_HANDSHAKE_SEND:
+                    processHandshakeSend(c);
+                    break;
+                    
+                case WS_CONNECTED:
+                    // RX: Process incoming frames
+                    if (c.client.available()) {
+                        c.lastActive = millis();
+                        processFrame(c);
+                    }
+                    
+                    // TX: Drain TX buffer
+                    c.processTx();
+                    
+                    // Keep-alive
+                    checkKeepalive(c);
+                    break;
+                    
+                case WS_CLOSING:
+                    c.disconnect();
+                    break;
+                    
+                default:
+                    break;
+            }
+        }
     }
 
-    // Emit to ALL clients wrapped with filter logic
-    // filterFunc returns true if client should receive the message
-    // filterFunc signature: bool(WebSocketClient& c)
+    // Broadcast to topic subscribers
     template <typename Filter>
     void broadcast(const char* msg, Filter filterFunc) {
         for (int i = 0; i < WS_MAX_CLIENTS; i++) {
-            if (clients[i].state == WS_CONNECTED && clients[i].client.connected()) {
+            if (clients[i].state == WS_CONNECTED) {
                 if (filterFunc(clients[i])) {
-                    clients[i].sendText(msg);
+                    clients[i].queueText(msg);
+                }
+            }
+        }
+    }
+
+    template <typename Filter>
+    void broadcastBinary(const void* data, uint16_t len, Filter filterFunc) {
+        for (int i = 0; i < WS_MAX_CLIENTS; i++) {
+            if (clients[i].state == WS_CONNECTED) {
+                if (filterFunc(clients[i])) {
+                    clients[i].queueFrame(WS_OP_BINARY, data, len);
                 }
             }
         }
     }
     
-    // Broadcast to topic subscribers
     void emit(const char* topic, const char* msg) {
         broadcast(msg, [topic](WebSocketClient& c) {
-            for(int s=0; s<WS_MAX_SUBS; s++) {
-                // Initial very simple check: topic match
-                // User can implement more complex property matching in custom broadcast
+            for (int s = 0; s < WS_MAX_SUBS; s++) {
                 if (strcmp(c.subscriptions[s].topic, topic) == 0) return true;
             }
             return false;
         });
     }
 
-    // Custom emit with property checking
-    // properties: array of WsProperty to match against user subscription
+    void emitBinary(const char* topic, const void* data, uint16_t len) {
+        broadcastBinary(data, len, [topic](WebSocketClient& c) {
+            for (int s = 0; s < WS_MAX_SUBS; s++) {
+                if (strcmp(c.subscriptions[s].topic, topic) == 0) {
+                    return true;
+                }
+            }
+            return false;
+        });
+    }
+
     void emitWithProps(const char* topic, const char* msg, const WsProperty* evtProps, uint8_t evtPropCount) {
         broadcast(msg, [&](WebSocketClient& c) {
-            for(int s=0; s<WS_MAX_SUBS; s++) {
+            for (int s = 0; s < WS_MAX_SUBS; s++) {
                 if (strcmp(c.subscriptions[s].topic, topic) == 0) {
-                    // Topic matched, now check if EVENT properties satisfy SUBSCRIPTION filter
-                    // Logic: Subscription Props is a FILTER. Event must match ALL filter props provided by user.
-                    // (Or other way around depending on req? Assuming Subs Params are requirements)
-                    
                     bool match = true;
-                    // For each property defined in the CLIENT'S subscription
-                    for(int p=0; p < c.subscriptions[s].propCount; p++) {
+                    for (int p = 0; p < c.subscriptions[s].propCount; p++) {
                         const char* reqKey = c.subscriptions[s].properties[p].key;
                         const char* reqVal = c.subscriptions[s].properties[p].value;
-                        
-                        // Find this key in the EVENT properties
                         bool keyFound = false;
-                        for(int ep=0; ep < evtPropCount; ep++) {
-                            if(strcmp(evtProps[ep].key, reqKey) == 0) {
-                                // Simple string match
-                                if(strcmp(evtProps[ep].value, reqVal) != 0) {
-                                    match = false; // Value mismatch
-                                }
+                        for (int ep = 0; ep < evtPropCount; ep++) {
+                            if (strcmp(evtProps[ep].key, reqKey) == 0) {
+                                if (strcmp(evtProps[ep].value, reqVal) != 0) match = false;
                                 keyFound = true;
                                 break;
                             }
                         }
-                        if (!keyFound) match = false; // Required key missing in event
+                        if (!keyFound) match = false;
                         if (!match) break;
                     }
                     if (match) return true;
@@ -382,217 +579,135 @@ public:
 private:
     void handleNewClients() {
         EthernetClient newClient = server->available();
-        if (newClient) {
-            // Check if this socket is already handled by an existing WebSocketClient
-            for (int i = 0; i < WS_MAX_CLIENTS; i++) {
-                if (clients[i].state != WS_DISCONNECTED && clients[i].client == newClient) {
-                    // This is an existing connection with data available, not a new connection
-                    return;
-                }
-            }
-
-             WS_LOGLN("WS: New Connection Attempt");
-            if (newClient.connected()) {
-                int freeSlot = -1;
-                for (int i = 0; i < WS_MAX_CLIENTS; i++) {
-                    if (clients[i].state == WS_DISCONNECTED || !clients[i].client.connected()) {
-                        freeSlot = i;
-                        break;
-                    }
-                }
-
-                if (freeSlot != -1) {
-                    WS_LOG("WS: Accepted in slot "); WS_LOGLN(freeSlot);
-                    clients[freeSlot].init(freeSlot, newClient);
-                } else {
-                    WS_LOGLN("WS: Server Full");
-                    newClient.stop();
-                }
-            } else {
-                 WS_LOGLN("WS: New conn but not connected?");
-            }
-        }
-    }
-
-    void handleClientData() {
-        for (int i = 0; i < WS_MAX_CLIENTS; i++) {
-            WebSocketClient& c = clients[i];
-            
-            // Check connectivity
-            if (c.state != WS_DISCONNECTED) {
-                if (!c.client.connected()) {
-                     WS_LOG("WS: Client "); WS_LOG(i); WS_LOGLN(" discon (socket closed)");
-                     c.disconnect();
-                     continue;
-                }
-            } else {
-                continue; // Skip disconnected slots
-            }
-
-            // checkTimeouts() logic moved here for simplicity loop
-            if (c.state == WS_CONNECTED) {
-                 // Moved back to checkTimeouts to ensure PINGs are sent
-            }
-
-            // Only read if data available
-            if (c.client.available()) {
-                c.lastActive = millis();
-                
-                if (c.state == WS_HANDSHAKE) {
-                    processHandshake(c);
-                } else if (c.state == WS_CONNECTED) {
-                    processFrame(c);
-                }
-            }
-        }
-    }
-
-    void checkTimeouts() {
-        uint32_t now = millis();
-        for (int i = 0; i < WS_MAX_CLIENTS; i++) {
-            WebSocketClient& c = clients[i];
-            if (c.state == WS_CONNECTED) {
-                // Keep-alive ping
-                if (now - c.lastPing > WS_PING_INTERVAL_MS) {
-                    WS_LOG("WS: Sending PING to "); WS_LOGLN(i);
-                    c.sendFrame(WS_OP_PING, NULL, 0);
-                    c.lastPing = now;
-                }
-                
-                // Timeout check moved from handleClientData to here for consistency
-                if (now - c.lastActive > WS_TIMEOUT_MS) {
-                    WS_LOG("WS: Client "); WS_LOG(i); WS_LOGLN(" timeout (no PONG)");
-                    c.disconnect();
-                }
-            }
-        }
-    }
-
-    void processHandshake(WebSocketClient& c) {
-        // Read available data into buffer (non-blocking)
-        int initialIndex = c.rxIndex;
-        while (c.client.available() && c.rxIndex < WS_RX_BUFFER_SIZE - 1) {
-            c.rxBuffer[c.rxIndex++] = c.client.read();
-        }
-        c.rxBuffer[c.rxIndex] = 0; // Null terminate for safety
-
-        if (c.rxIndex > initialIndex) {
-            // Serial.print("WS RX: "); Serial.print(c.rxIndex); Serial.println(" bytes accumulated");
-        }
-
-        // Process lines from buffer
-        int scanPos = 0;
-        bool keepScanning = true;
+        if (!newClient) return;
         
-        while (keepScanning) {
-            // Find newline
-            int newlinePos = -1;
-            for (int i = scanPos; i < c.rxIndex; i++) {
-                if (c.rxBuffer[i] == '\n') {
-                    newlinePos = i;
+        // Check if already tracked
+        for (int i = 0; i < WS_MAX_CLIENTS; i++) {
+            if (clients[i].state != WS_DISCONNECTED && clients[i].client == newClient) {
+                return; // Already handled
+            }
+        }
+        
+        WS_LOGLN("WS: New connection");
+        
+        if (newClient.connected()) {
+            int freeSlot = -1;
+            for (int i = 0; i < WS_MAX_CLIENTS; i++) {
+                if (clients[i].state == WS_DISCONNECTED || !clients[i].client.connected()) {
+                    freeSlot = i;
                     break;
                 }
             }
-
-            if (newlinePos != -1) {
-                // We have a complete line
-                // Extract line (handling \r if present)
-                int lineEnd = newlinePos;
-                if (lineEnd > scanPos && c.rxBuffer[lineEnd - 1] == '\r') {
-                    lineEnd--;
-                }
-                
-                // Temporary null terminate to treat as string
-                char savedChar = c.rxBuffer[lineEnd];
-                c.rxBuffer[lineEnd] = 0;
-                String line = String((char*)&c.rxBuffer[scanPos]);
-                c.rxBuffer[lineEnd] = savedChar; // Restore
-                
-                line.trim();
-                
-                WS_LOG("HS Line: "); WS_LOGLN(line);
-
-                if (line.length() == 0) {
-                    // Empty line found -> End of Headers
-                    if (c.handshakeKey.length() > 0) {
-                        String acceptKey = WsCrypto::generateAcceptKey(c.handshakeKey);
-                         WS_LOG("WS Accept: "); WS_LOGLN(acceptKey);
-                        
-                        String response = "HTTP/1.1 101 Switching Protocols\r\n"
-                                          "Upgrade: websocket\r\n"
-                                          "Connection: Upgrade\r\n"
-                                          "Sec-WebSocket-Accept: " + acceptKey + "\r\n"
-                                          "\r\n";
-                        
-                        c.client.print(response);
-                        c.client.flush();
-                        c.state = WS_CONNECTED;
-                         WS_LOGLN("WS: Handshake Complete");
-                        
-                        // Preserve any frame data that arrived with the handshake
-                        int remaining = c.rxIndex - (newlinePos + 1);
-                        if (remaining > 0) {
-                            memmove(c.rxBuffer, &c.rxBuffer[newlinePos + 1], remaining);
-                            c.rxIndex = remaining;
-                        } else {
-                            c.rxIndex = 0; 
-                        }
-                        return;
-                    } else {
-                        // Headers ended but no Key?
-                        WS_LOGLN("WS Error: Headers ended but no Key found");
-                        c.disconnect();
-                        return;
-                    }
-                }
-                
-                String lower = line;
-                lower.toLowerCase();
-                if (lower.startsWith("sec-websocket-key:")) {
-                    c.handshakeKey = line.substring(18);
-                    c.handshakeKey.trim();
-                     WS_LOG("WS Key: "); WS_LOGLN(c.handshakeKey);
-                }
-
-                // Advance scanPos
-                scanPos = newlinePos + 1;
+            
+            if (freeSlot != -1) {
+                WS_LOG("WS: Accepted slot "); WS_LOGLN(freeSlot);
+                clients[freeSlot].init(freeSlot, newClient);
             } else {
-                // No more newlines in buffer
-                keepScanning = false;
+                WS_LOGLN("WS: Server full");
+                newClient.stop();
             }
-        }
-
-        // Shift remaining data to start of buffer
-        if (scanPos > 0) {
-            int remaining = c.rxIndex - scanPos;
-            if (remaining > 0) {
-                memmove(c.rxBuffer, &c.rxBuffer[scanPos], remaining);
-            }
-            c.rxIndex = remaining;
-        }
-
-        // Safety: Prevent buffer overflow if line is too long
-        if (c.rxIndex >= WS_RX_BUFFER_SIZE - 1) {
-             WS_LOGLN("WS Error: Header buffer overflow");
-             c.rxIndex = 0; // Discard garbage
-             c.disconnect();
         }
     }
 
+    void processHandshakeRecv(WebSocketClient& c) {
+        // Stream-parse HTTP headers one byte at a time
+        // Only extract Sec-WebSocket-Key, discard everything else
+        while (c.client.available()) {
+            char ch = c.client.read();
+            
+            if (ch == '\r') {
+                c.sawCR = true;
+                continue;
+            }
+            
+            if (ch == '\n') {
+                // End of line
+                c.lineBuffer[c.lineIndex] = 0;
+                
+                if (c.lineIndex == 0 && c.sawCR) {
+                    // Empty line = end of headers
+                    if (c.wsKey[0] == 0) {
+                        WS_LOGLN("WS: No key found");
+                        c.disconnect();
+                        return;
+                    }
+                    
+                    // Send response immediately
+                    String acceptKey = WsCrypto::generateAcceptKey(String(c.wsKey));
+                    c.client.print(F("HTTP/1.1 101 Switching Protocols\r\n"
+                                     "Upgrade: websocket\r\n"
+                                     "Connection: Upgrade\r\n"
+                                     "Sec-WebSocket-Accept: "));
+                    c.client.print(acceptKey);
+                    c.client.print(F("\r\n\r\n"));
+                    c.client.flush();
+                    
+                    c.state = WS_CONNECTED;
+                    c.lastActive = millis();
+                    c.lastPing = millis();
+                    WS_LOGLN("WS: Connected!");
+                    return;
+                }
+                
+                // Check if this line is Sec-WebSocket-Key
+                if (c.lineIndex > 18) {
+                    // Case-insensitive prefix check
+                    if ((strncmp(c.lineBuffer, "Sec-WebSocket-Key:", 18) == 0) ||
+                        (strncmp(c.lineBuffer, "sec-websocket-key:", 18) == 0)) {
+                        // Extract the key value
+                        char* val = c.lineBuffer + 18;
+                        while (*val == ' ') val++;  // Skip spaces
+                        
+                        // Copy key (trim trailing spaces)
+                        int len = strlen(val);
+                        while (len > 0 && val[len-1] == ' ') len--;
+                        if (len > 0 && len < 28) {
+                            memcpy(c.wsKey, val, len);
+                            c.wsKey[len] = 0;
+                            WS_LOG("WS Key: "); WS_LOGLN(c.wsKey);
+                        }
+                    }
+                }
+                
+                // Reset for next line
+                c.lineIndex = 0;
+                c.sawCR = false;
+                continue;
+            }
+            
+            // Regular character - add to line buffer if space
+            if (c.lineIndex < WS_LINE_BUFFER_SIZE - 1) {
+                c.lineBuffer[c.lineIndex++] = ch;
+            }
+            // If line is too long, we just truncate it (we only care about the key prefix)
+            c.sawCR = false;
+        }
+    }
+
+    // Handshake send is now done immediately in processHandshakeRecv
+    // This state should not be reached, but handle gracefully
+    void processHandshakeSend(WebSocketClient& c) {
+        c.state = WS_CONNECTED;
+        WS_LOGLN("WS: Connected (from send state)");
+    }
+
     void processFrame(WebSocketClient& c) {
-        // 1. Read all available data into buffer
+        // Read available data
+        int avail = c.client.available();
+        int readCount = 0;
         while (c.client.available() && c.rxIndex < WS_RX_BUFFER_SIZE) {
             c.rxBuffer[c.rxIndex++] = c.client.read();
+            readCount++;
+        }
+        if (readCount > 0) {
+            WS_LOG("WS RX: read "); WS_LOG(readCount); WS_LOG(" bytes, total "); WS_LOGLN(c.rxIndex);
         }
 
-        // 2. Loop to process frames from buffer
-        bool keepProcessing = true;
-        while (keepProcessing && c.rxIndex >= 2) {
-            // Need at least 2 bytes to check header
+        // Process complete frames
+        while (c.rxIndex >= 2) {
             uint8_t b1 = c.rxBuffer[0];
             uint8_t b2 = c.rxBuffer[1];
             
-            bool fin = b1 & 0x80;
             uint8_t opcode = b1 & 0x0F;
             bool masked = b2 & 0x80;
             uint64_t payloadLen = b2 & 0x7F;
@@ -600,141 +715,109 @@ private:
             int headerLen = 2;
             if (payloadLen == 126) headerLen += 2;
             else if (payloadLen == 127) headerLen += 8;
-            
             if (masked) headerLen += 4;
             
-            // Check if we have the full header
-            if (c.rxIndex < headerLen) {
-                keepProcessing = false;
-                break;
-            }
+            // Need full header
+            if (c.rxIndex < headerLen) break;
             
-            // If header is present, we can determine total frame size
-            // (Need to read extended length if applicable)
+            // Parse extended length
             if (payloadLen == 126) {
-                payloadLen = (c.rxBuffer[2] << 8) | c.rxBuffer[3];
+                payloadLen = ((uint16_t)c.rxBuffer[2] << 8) | c.rxBuffer[3];
             } else if (payloadLen == 127) {
-                 // Ignore/Skip jumbo frames for stability
-                 // We don't support 64-bit length properly in this buffer
-                 // Strategy: Consume buffer and hope to resync or disconnect
-                 c.rxIndex = 0; 
-                 c.disconnect(); 
-                 return;
-            }
-            
-            uint32_t totalFrameSize = headerLen + (uint32_t)payloadLen;
-            
-            if (totalFrameSize > WS_RX_BUFFER_SIZE) {
-                // Frame too large for buffer
+                // 64-bit frames not supported
                 c.disconnect();
                 return;
             }
             
-            // Check if we have the full frame
-            if (c.rxIndex >= totalFrameSize) {
-                // We have a full frame!
-                
-                // Extract Mask Key
-                uint8_t maskKey[4] = {0,0,0,0};
-                int maskOffset = headerLen - 4; // default assumption (payloadLen < 126)
-                if (payloadLen == 126) maskOffset = 4;
-                else if (payloadLen == 127) maskOffset = 10;
-                
-                if (!masked) maskOffset = 0; // Invalid for client->server frames usually, but handled
-                
-                if (masked) {
-                    for(int k=0; k<4; k++) maskKey[k] = c.rxBuffer[headerLen - 4 + k];
-                }
-                
-                // Unmask and Extract Payload
-                // To save memory, we unmask in-place at the frame location, 
-                // or just copy strictly the payload to a temp pointer if we were using a separate buffer.
-                // Here we can point to the payload in the buffer.
-                
-                char* payloadPtr = (char*)&c.rxBuffer[headerLen];
-                
-                if (masked) {
-                    for (uint32_t i = 0; i < payloadLen; i++) {
-                        payloadPtr[i] ^= maskKey[i % 4];
-                    }
-                }
-                
-                // Temporarily null terminate the payload for string handlers
-                // WARNING: This overwrites the next byte in the buffer (start of next frame)
-                // We must save it, duplicate logic, or shift first.
-                // Because we are memmoving later, let's just handle it carefully.
-                
-                // Safe approach: Handle opcode immediately then shift.
-                // We rely on handleOpcode not expecting a null-terminated string unless we guarantee it.
-                // Let's guarantee it by being careful. 
-                // If payloadLen < 0, nothing to do.
-                
-                // If `totalFrameSize == c.rxIndex`, the byte at `rxIndex` is invalid. 
-                // We can write a null there if `rxIndex < WS_RX_BUFFER_SIZE`.
-                
-                bool savedByteExists = false;
-                uint8_t savedByte = 0;
-                
-                // If the frame ends exactly at the end of valid data, we can just append 0 if space
-                // If the frame ends before the end of data, we save the next byte.
-                
-                if (c.rxIndex > totalFrameSize) {
-                    savedByte = c.rxBuffer[totalFrameSize];
-                    savedByteExists = true;
-                    c.rxBuffer[totalFrameSize] = 0;
-                } else if (totalFrameSize < WS_RX_BUFFER_SIZE) {
-                    c.rxBuffer[totalFrameSize] = 0;
-                }
-                
-                handleOpcode(c, opcode, payloadPtr, (uint16_t)payloadLen);
-                
-                if (savedByteExists) {
-                    c.rxBuffer[totalFrameSize] = savedByte;
-                }
-
-                // Remove processed frame from buffer
-                int remaining = c.rxIndex - totalFrameSize;
-                if (remaining > 0) {
-                    memmove(c.rxBuffer, &c.rxBuffer[totalFrameSize], remaining);
-                }
-                c.rxIndex = remaining;
-                
-            } else {
-                // Not enough data for full payload yet
-                keepProcessing = false;
+            uint32_t totalFrameSize = headerLen + (uint32_t)payloadLen;
+            
+            // Frame too large?
+            if (totalFrameSize > WS_RX_BUFFER_SIZE) {
+                WS_LOG("WS: Frame too large: "); WS_LOGLN(totalFrameSize);
+                c.disconnect();
+                return;
             }
+            
+            // Need full frame
+            if (c.rxIndex < totalFrameSize) break;
+            
+            // Extract and unmask payload
+            uint8_t maskKey[4] = {0};
+            if (masked) {
+                int maskOffset = headerLen - 4;
+                for (int k = 0; k < 4; k++) maskKey[k] = c.rxBuffer[maskOffset + k];
+            }
+            
+            char* payloadPtr = (char*)&c.rxBuffer[headerLen];
+            if (masked) {
+                for (uint32_t i = 0; i < payloadLen; i++) {
+                    payloadPtr[i] ^= maskKey[i % 4];
+                }
+            }
+            
+            // Handle opcode
+            handleOpcode(c, opcode, payloadPtr, (uint16_t)payloadLen);
+            
+            // Remove processed frame
+            int remaining = c.rxIndex - totalFrameSize;
+            if (remaining > 0) {
+                memmove(c.rxBuffer, &c.rxBuffer[totalFrameSize], remaining);
+            }
+            c.rxIndex = remaining;
         }
     }
 
     void handleOpcode(WebSocketClient& c, uint8_t opcode, char* data, uint16_t len) {
         switch (opcode) {
             case WS_OP_TEXT:
-                // Debug received text
-                // Serial.print("WS RX Text: "); Serial.println(data);
+                data[len] = 0; // Null terminate (safe due to buffer design)
                 if (onMessageCallback) onMessageCallback(c, data, len);
                 handleInternalCommands(c, data);
                 break;
+                
+            case WS_OP_BINARY:
+                // Binary frames from client not handled in this impl
+                break;
+                
             case WS_OP_PING:
-                c.sendFrame(WS_OP_PONG, data, len);
+                c.sendFrameBlocking(WS_OP_PONG, data, len);
                 break;
+                
             case WS_OP_CLOSE:
-                c.disconnect();
+                c.state = WS_CLOSING;
                 break;
+                
             case WS_OP_PONG:
-                WS_LOGLN("WS: RX PONG");
                 c.lastActive = millis();
+                WS_LOGLN("WS: PONG");
                 break;
         }
     }
     
-    // Internal JSON command parser for subscriptions
-    // Format: {"action":"sub", "topic":"foo", "params":[{"key":"k","value":"v"}]}
-    // Very simplified parser to avoid heavy JSON lib dependency here if possible, 
-    // or assume ArduinoJson is available (it is in context).
     void handleInternalCommands(WebSocketClient& c, char* json) {
-        // Internal command handling is now done via default message handler
+        // Handled via message callback
+    }
+
+    void checkKeepalive(WebSocketClient& c) {
+        uint32_t now = millis();
+        
+        // Send ping
+        if (now - c.lastPing > WS_PING_INTERVAL_MS) {
+            c.sendFrameBlocking(WS_OP_PING, NULL, 0);
+            c.lastPing = now;
+        }
+        
+        // Timeout
+        if (now - c.lastActive > WS_TIMEOUT_MS) {
+            WS_LOG("WS: Timeout client "); WS_LOGLN(c.id);
+            c.disconnect();
+        }
     }
 };
+
+// ============================================================================
+// Global Instances
+// ============================================================================
 
 EthernetServer wsEthServer(81);
 WebSocketServer wsServer(wsEthServer);
@@ -742,7 +825,6 @@ WebSocketServer wsServer(wsEthServer);
 void xtp_ws_default_handler(WebSocketClient& c, const char* msg, uint16_t len) {
     WS_LOG("WS Msg: "); WS_LOGLN(msg);
 
-    // Check for "action":"sub"
     if (strstr(msg, "\"action\"") && strstr(msg, "\"sub\"")) {
         char* topicStart = strstr((char*)msg, "\"topic\"");
         if (topicStart) {
@@ -757,13 +839,14 @@ void xtp_ws_default_handler(WebSocketClient& c, const char* msg, uint16_t len) {
                     i++;
                 }
                 
-                WS_LOG("WS Sub: "); WS_LOGLN(topic);
+                WS_LOG("WS Sub topic: '"); WS_LOG(topic); WS_LOGLN("'");
 
                 WsSubscription* s = c.getEmptySubscription();
                 if (s) {
                     strncpy(s->topic, topic, 31);
+                    WS_LOG("  -> Subscribed OK, slot found"); WS_LOGLN("");
                 } else {
-                    WS_LOGLN("WS Sub Fail: Full");
+                    WS_LOGLN("  -> ERROR: No empty subscription slot!");
                 }
             }
         }
