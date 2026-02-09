@@ -4,6 +4,7 @@
 
 #include <Arduino.h>
 #include <Ethernet.h>
+#include <utility/w5100.h>   // W5100 class for direct non-blocking socket control
 #include "xtp_config.h"
 
 // ============================================================================
@@ -64,6 +65,11 @@
 #define WS_GUID "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 #define WS_PING_INTERVAL_MS 10000
 #define WS_TIMEOUT_MS 30000
+
+// Max time (ms) to tolerate W5500 TX buffer being full before force-closing
+#ifndef WS_TX_STALL_TIMEOUT_MS
+#define WS_TX_STALL_TIMEOUT_MS 2000
+#endif
 
 // ============================================================================
 // Structs
@@ -298,6 +304,9 @@ public:
     
     // Handshake - only store the key (24 bytes base64)
     char wsKey[28];  // Base64 key is 24 chars + null
+    
+    // TX stall detection: timestamp when W5500 TX buffer first became full (0 = not stalled)
+    uint32_t txStallStart = 0;
 
     WebSocketClient() : id(0) {}
 
@@ -313,6 +322,7 @@ public:
         sawCR = false;
         wsKey[0] = 0;
         txBuffer.reset();
+        txStallStart = 0;
     }
 
     void disconnect() {
@@ -321,6 +331,24 @@ public:
         clearSubscriptions();
         txBuffer.reset();
         rxIndex = 0;
+        txStallStart = 0;
+    }
+
+    // Force-close: non-blocking socket kill for link-down scenarios.
+    // client.stop() blocks (tries graceful FIN + waits up to 1s).
+    // W5100.execCmdSn(Sock_CLOSE) is a single SPI command — instant.
+    void forceClose() {
+        uint8_t sock = client.getSocketNumber();
+        if (sock < MAX_SOCK_NUM) {
+            SPI.beginTransaction(SPI_ETHERNET_SETTINGS);
+            W5100.execCmdSn(sock, Sock_CLOSE);
+            SPI.endTransaction();
+        }
+        state = WS_DISCONNECTED;
+        clearSubscriptions();
+        txBuffer.reset();
+        rxIndex = 0;
+        txStallStart = 0;
     }
 
     void clearSubscriptions() {
@@ -379,59 +407,75 @@ public:
         return queueFrame(WS_OP_TEXT, text, strlen(text));
     }
     
-    // Process TX buffer - send data in chunks (non-blocking)
+    // ── Non-blocking TX state machine ─────────────────────────
+    // Instead of calling client.write() which enters socketSend()'s
+    // blocking while-loops, we pre-check W5500 TX buffer space via
+    // availableForWrite() (a single non-blocking SPI register read).
+    // If no space: return immediately, come back next loop().
+    // If stalled for too long: force-close the client.
+    // This converts both blocking loops into a check-and-return pattern.
     void processTx() {
-        if (txBuffer.isEmpty()) return;
-        if (!client.connected()) return;
+        if (txBuffer.isEmpty()) { txStallStart = 0; return; }
         
-        // Send multiple chunks to drain buffer faster
-        // This helps with large frames like binary sensor data
+        // Check socket is still in a writable state
+        uint8_t sockStat = client.status();
+        if (sockStat != 0x17 /*ESTABLISHED*/ && sockStat != 0x1C /*CLOSE_WAIT*/) {
+            WS_LOG("WS TX: socket state 0x"); WS_LOGLN(sockStat);
+            txBuffer.reset(); txStallStart = 0;
+            return;
+        }
+        
+        // Check W5500 hardware TX buffer space (non-blocking SPI read)
+        int hwAvail = client.availableForWrite();
+        if (hwAvail <= 0) {
+            // W5500 TX buffer full — don't enter socketSend(), just return
+            uint32_t now = millis();
+            if (txStallStart == 0) {
+                txStallStart = now;
+                WS_LOG("WS TX stall: W5500 buffer full, client "); WS_LOGLN(id);
+            } else if (now - txStallStart > WS_TX_STALL_TIMEOUT_MS) {
+                WS_LOG("WS TX stall timeout ("); WS_LOG(WS_TX_STALL_TIMEOUT_MS);
+                WS_LOG("ms), force-closing client "); WS_LOGLN(id);
+                forceClose();
+            }
+            return;  // Come back next loop iteration
+        }
+        txStallStart = 0;  // W5500 has space, not stalled
+        
+        // Send chunks, clamped to available W5500 TX buffer space.
+        // Since we only write what fits, socketSend()'s Phase 1 loop
+        // (wait for free space) passes through in one iteration.
+        // Phase 2 (wait for SEND_OK) completes in microseconds since
+        // the W5500 only needs to accept the data into its TCP pipeline.
         uint8_t chunk[WS_TX_CHUNK_SIZE];
-        int maxChunks = 4; // Send up to 4 chunks per call
+        int maxChunks = 4;
         
         while (maxChunks-- > 0 && !txBuffer.isEmpty()) {
-            uint16_t toSend = min((uint16_t)WS_TX_CHUNK_SIZE, txBuffer.available());
+            hwAvail = client.availableForWrite();
+            if (hwAvail <= 0) break;  // W5500 buffer filled up mid-drain
             
-            if (toSend > 0) {
-                uint16_t count = txBuffer.read(chunk, toSend);
-                if (count > 0) {
-                    size_t written = client.write(chunk, count);
-                    if (written < count) {
-                        WS_LOG("WS TX partial: "); WS_LOG(written); 
-                        WS_LOG("/"); WS_LOGLN(count);
-                        break; // Socket buffer full, stop for now
-                    }
+            // Clamp to min(chunk_size, hw_available, ring_buffer_available)
+            uint16_t toSend = txBuffer.available();
+            if (toSend > (uint16_t)WS_TX_CHUNK_SIZE) toSend = WS_TX_CHUNK_SIZE;
+            if (toSend > (uint16_t)hwAvail) toSend = (uint16_t)hwAvail;
+            if (toSend == 0) break;
+            
+            uint16_t count = txBuffer.read(chunk, toSend);
+            if (count > 0) {
+                size_t written = client.write(chunk, count);
+                if (written < count) {
+                    WS_LOG("WS TX partial: "); WS_LOG(written);
+                    WS_LOG("/"); WS_LOGLN(count);
+                    break;  // Unexpected partial write, retry next loop
                 }
             }
         }
     }
     
-    // Legacy blocking send (for small messages like PONG)
-    void sendFrameBlocking(uint8_t opcode, const void* payload, uint16_t length) {
-        if (!client.connected()) return;
-        
-        uint8_t header[4];
-        uint8_t headerLen = 0;
-        
-        header[0] = 0x80 | (opcode & 0x0F);
-        
-        if (length <= 125) {
-            header[1] = (uint8_t)length;
-            headerLen = 2;
-        } else if (length <= 65535) {
-            header[1] = 126;
-            header[2] = (length >> 8) & 0xFF;
-            header[3] = length & 0xFF;
-            headerLen = 4;
-        } else {
-            return;
-        }
-        
-        client.write(header, headerLen);
-        if (length > 0) {
-            client.write((const uint8_t*)payload, length);
-        }
-        client.flush();
+    // Queue a control frame (PING/PONG) via the ring buffer.
+    // Unlike the old sendFrameBlocking, this never calls write/flush directly.
+    bool queueControlFrame(uint8_t opcode, const void* payload, uint16_t length) {
+        return queueFrame(opcode, payload, length);
     }
 };
 
@@ -457,6 +501,21 @@ public:
     void begin() {}
 
     void loop() {
+        // ── Fast link-down detection ──────────────────────────────
+        // W5500 socketSend() blocks in a tight loop waiting for TX
+        // buffer space that never frees when cable is pulled (no ACKs).
+        // client.connected() only checks socket state (still ESTABLISHED).
+        // Check the PHY register directly — instant and non-blocking.
+        if (Ethernet.linkStatus() != LinkON) {
+            for (int i = 0; i < WS_MAX_CLIENTS; i++) {
+                if (clients[i].state != WS_DISCONNECTED) {
+                    WS_LOG("WS: Link down, dropping client "); WS_LOGLN(i);
+                    clients[i].forceClose();
+                }
+            }
+            return;  // Skip all client I/O when link is down
+        }
+
         handleNewClients();
         
         for (int i = 0; i < WS_MAX_CLIENTS; i++) {
@@ -637,7 +696,8 @@ private:
                                      "Sec-WebSocket-Accept: "));
                     c.client.print(acceptKey);
                     c.client.print(F("\r\n\r\n"));
-                    c.client.flush();
+                    // Note: no flush() — W5500 handles TCP transmission
+                    // autonomously. flush() blocks until all data is ACKed.
                     
                     c.state = WS_CONNECTED;
                     c.lastActive = millis();
@@ -774,7 +834,7 @@ private:
                 break;
                 
             case WS_OP_PING:
-                c.sendFrameBlocking(WS_OP_PONG, data, len);
+                c.queueControlFrame(WS_OP_PONG, data, len);
                 break;
                 
             case WS_OP_CLOSE:
@@ -795,16 +855,16 @@ private:
     void checkKeepalive(WebSocketClient& c) {
         uint32_t now = millis();
         
-        // Send ping
+        // Send ping (queued, non-blocking)
         if (now - c.lastPing > WS_PING_INTERVAL_MS) {
-            c.sendFrameBlocking(WS_OP_PING, NULL, 0);
+            c.queueControlFrame(WS_OP_PING, NULL, 0);
             c.lastPing = now;
         }
         
         // Timeout
         if (now - c.lastActive > WS_TIMEOUT_MS) {
             WS_LOG("WS: Timeout client "); WS_LOGLN(c.id);
-            c.disconnect();
+            c.forceClose();  // Use forceClose instead of blocking disconnect
         }
     }
 };
