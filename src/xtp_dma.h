@@ -67,7 +67,7 @@ static inline void ___XTP_tim3_trgo_init() {
     __HAL_RCC_TIM3_CLK_ENABLE();
     TIM3->PSC = 0;
     TIM3->ARR = 8399;          // example: 10 kHz @ 84 MHz
-    TIM3->CR2 = (3 << 4);      // MMS=010: TRGO on update
+    TIM3->CR2 = (2 << 4);      // MMS=010: TRGO on update
     TIM3->CR1 = TIM_CR1_CEN;
 }
 
@@ -104,6 +104,10 @@ static void ___XTP_initADC_DMA() {
     // 7:    ch14   (PC4)
     // 8:    ch8    (PB0) optional
     // 9:    ch9    (PB1) optional
+    //
+    // xtpAdcBuf index mapping:
+    //   [0]=PA0, [1]=PA1, [2]=PA2, [3]=PA3, [4]=PA4,
+    //   [5]=PC5(ch15), [6]=PC4(ch14), [7]=PB0(ch8), [8]=PB1(ch9)
     ADC1->SQR3 = (0) | (1 << 5) | (2 << 10) | (3 << 15) | (4 << 20) | (15 << 25);
 
 #if defined(XTP_ADC_USE_PB0) && defined(XTP_ADC_USE_PB1)
@@ -118,12 +122,14 @@ static void ___XTP_initADC_DMA() {
 
     // Sampling time (keep consistent with your existing choices)
     // SMPR1: channels 10-17, SMPR2: channels 0-9
+    ADC1->SMPR2 = (1 << (3 * 0)) | (1 << (3 * 1)) | (1 << (3 * 2)) |
+                  (1 << (3 * 3)) | (1 << (3 * 4));  // ch0-4 (PA0-PA4)
     ADC1->SMPR1 |= (1 << (3 * (14 - 10))) | (1 << (3 * (15 - 10))); // ch14, ch15
 #ifdef XTP_ADC_USE_PB0
-    ADC1->SMPR2 |= (1 << (3 * XTP_ADC_PB0_CH)); // ch8
+    ADC1->SMPR2 |= (5 << (3 * XTP_ADC_PB0_CH)); // ch8, 112 cycles (prevent S/H crosstalk)
 #endif
 #ifdef XTP_ADC_USE_PB1
-    ADC1->SMPR2 |= (1 << (3 * XTP_ADC_PB1_CH)); // ch9
+    ADC1->SMPR2 |= (5 << (3 * XTP_ADC_PB1_CH)); // ch9, 112 cycles (prevent S/H crosstalk)
 #endif
 
     ADC1->CR1 = ADC_CR1_SCAN;
@@ -145,12 +151,12 @@ static inline int xtpAnalogRead(int pin) {
         case ANALOG_5_pin:     return xtpAdcBufSnapshot[5]; // PC5 (ch15)
         case ANALOG_24V_pin:   return xtpAdcBufSnapshot[6]; // PC4 (ch14)
 #if defined(XTP_ADC_USE_PB0) && defined(XTP_ADC_USE_PB1)
-        case MISC_0_pin:       return xtpAdcBufSnapshot[7]; // PB0 (ch8)
-        case MISC_1_pin:       return xtpAdcBufSnapshot[8]; // PB1 (ch9)
+        case MISC_1_pin:       return xtpAdcBufSnapshot[7]; // PB0 (ch8)  - MISC_1_pin=PB0
+        case MISC_0_pin:       return xtpAdcBufSnapshot[8]; // PB1 (ch9)  - MISC_0_pin=PB1
 #elif defined(XTP_ADC_USE_PB0)
-        case MISC_0_pin:       return xtpAdcBufSnapshot[7]; // PB0 (ch8)
+        case MISC_1_pin:       return xtpAdcBufSnapshot[7]; // PB0 (ch8)  - MISC_1_pin=PB0
 #elif defined(XTP_ADC_USE_PB1)
-        case MISC_0_pin:       return xtpAdcBufSnapshot[7]; // PB1 (ch9)
+        case MISC_0_pin:       return xtpAdcBufSnapshot[7]; // PB1 (ch9)  - MISC_0_pin=PB1
 #endif
         default: return -1;
     }
@@ -203,10 +209,10 @@ static void ___XTP_initADC_DMA() {
     ADC1->SMPR2 = (1 << (3 * 0)) | (1 << (3 * 1)) | (1 << (3 * 2)) |
                   (1 << (3 * 3)) | (1 << (3 * 4)) | (1 << (3 * 5));
 #ifdef XTP_ADC_USE_PB0
-    ADC1->SMPR2 |= (1 << (3 * XTP_ADC_PB0_CH));
+    ADC1->SMPR2 |= (5 << (3 * XTP_ADC_PB0_CH)); // ch8, 112 cycles (prevent S/H crosstalk)
 #endif
 #ifdef XTP_ADC_USE_PB1
-    ADC1->SMPR2 |= (1 << (3 * XTP_ADC_PB1_CH));
+    ADC1->SMPR2 |= (5 << (3 * XTP_ADC_PB1_CH)); // ch9, 112 cycles (prevent S/H crosstalk)
 #endif
 
     ADC1->CR1 = ADC_CR1_SCAN;
@@ -227,12 +233,12 @@ static inline int xtpAnalogRead(int pin) {
         case ANALOG_4_pin:     return xtpAdcBufSnapshot[4]; // PA4
         case ANALOG_5_pin:     return xtpAdcBufSnapshot[5]; // PA5
 #if defined(XTP_ADC_USE_PB0) && defined(XTP_ADC_USE_PB1)
-        case MISC_0_pin:       return xtpAdcBufSnapshot[6]; // PB0 (ch8)
-        case MISC_1_pin:       return xtpAdcBufSnapshot[7]; // PB1 (ch9)
+        case MISC_1_pin:       return xtpAdcBufSnapshot[6]; // PB0 (ch8)  - MISC_1_pin=PB0
+        case MISC_0_pin:       return xtpAdcBufSnapshot[7]; // PB1 (ch9)  - MISC_0_pin=PB1
 #elif defined(XTP_ADC_USE_PB0)
-        case MISC_0_pin:       return xtpAdcBufSnapshot[6]; // PB0 (ch8)
+        case MISC_1_pin:       return xtpAdcBufSnapshot[6]; // PB0 (ch8)  - MISC_1_pin=PB0
 #elif defined(XTP_ADC_USE_PB1)
-        case MISC_0_pin:       return xtpAdcBufSnapshot[6]; // PB1 (ch9)
+        case MISC_0_pin:       return xtpAdcBufSnapshot[6]; // PB1 (ch9)  - MISC_0_pin=PB1
 #endif
         case ANALOG_24V_pin:   return -1;
         default: return -1;
