@@ -57,11 +57,21 @@ void ota_setup() {
         String type = OTA.getCommand() == U_FLASH ? "flash" : "filesystem" /* U_SPIFFS */;
         // NOTE: if updating SPIFFS this would be the place to unmount SPIFFS using SPIFFS.end()
         Serial.println("OTA update request: " + type);
+        Serial.flush();
         IWatchdog.reload();
         });
     OTA.onStart([]() {
         ota_update_in_progress = true;
         if (ota_shutdown) ota_shutdown();
+#ifdef XTP_ADC_DMA
+        // Stop the entire ADC+DMA pipeline (TIM3 triggers ADC, DMA transfers results)
+        // These keep running even after thread_pause() and can interfere with flash ops
+        TIM3->CR1 &= ~TIM_CR1_CEN;        // Stop TIM3 (ADC trigger)
+        ADC1->CR2 &= ~ADC_CR2_ADON;       // Stop ADC
+        DMA2_Stream0->CR &= ~DMA_SxCR_EN; // Stop DMA
+#endif
+        Serial.println("[OTA] TIM2+TIM3+ADC+DMA stopped");
+        Serial.flush();
         IWatchdog.reload();
         });
     OTA.onProgress([](unsigned int progress, unsigned int total) {
@@ -98,6 +108,12 @@ void ota_setup() {
         xtp_ssd1306_print(msg);
         if (ota_update_in_progress) {
             ota_update_in_progress = false;
+#ifdef XTP_ADC_DMA
+            // Restart ADC+DMA pipeline
+            DMA2_Stream0->CR |= DMA_SxCR_EN;  // Restart DMA
+            ADC1->CR2 |= ADC_CR2_ADON;        // Restart ADC
+            TIM3->CR1 |= TIM_CR1_CEN;         // Restart TIM3
+#endif
             thread_resume();
             xtp_ssd1306_clear();
             if (ota_resume) ota_resume();

@@ -47,6 +47,7 @@ enum EthernetState {
     ETH_STATE_INIT_STATIC,           // Static IP configuration
     ETH_STATE_INIT_SERVER_START,     // Start server
     ETH_STATE_INIT_COMPLETE,         // Initialization complete
+    ETH_STATE_DHCP_RETRY,            // Background DHCP retry while on fallback static IP
     ETH_STATE_DISCONNECTED,          // Link is down
     ETH_STATE_ERROR                  // Error state, will retry
 };
@@ -62,6 +63,8 @@ struct EthernetStateMachine {
     bool linkEstablished = false;
     bool serverReady = false;
     bool dhcpInProgress = false;
+    bool dhcpFallbackActive = false;  // Session-only static IP fallback (not persisted)
+    uint32_t lastDhcpRetry = 0;        // Timestamp of last DHCP retry attempt
     uint8_t retryCount = 0;
     uint8_t initCycle = 0;
     
@@ -74,6 +77,9 @@ struct EthernetStateMachine {
     static constexpr uint32_t MIN_HARD_RESET_INTERVAL = 90000;
     static constexpr uint32_t MIN_SOFT_RESET_INTERVAL = 45000;
     static constexpr uint32_t DHCP_TIMEOUT = 30000;
+    static constexpr uint32_t DHCP_RETRY_INTERVAL = 5000;    // How often to retry DHCP while on fallback
+    static constexpr uint32_t DHCP_RETRY_TIMEOUT = 2000;    // Short timeout per retry attempt
+    static constexpr uint32_t DHCP_RETRY_RESPONSE = 1000;   // Short response timeout per retry
     static constexpr uint32_t ERROR_RETRY_DELAY = 5000;
     static constexpr uint32_t LINK_CHECK_INTERVAL = 1000;
     
@@ -111,6 +117,7 @@ struct EthernetStateMachine {
             case ETH_STATE_INIT_STATIC: return "INIT_STATIC";
             case ETH_STATE_INIT_SERVER_START: return "INIT_SERVER_START";
             case ETH_STATE_INIT_COMPLETE: return "INIT_COMPLETE";
+            case ETH_STATE_DHCP_RETRY: return "DHCP_RETRY";
             case ETH_STATE_DISCONNECTED: return "DISCONNECTED";
             case ETH_STATE_ERROR: return "ERROR";
             default: return "UNKNOWN";
@@ -236,6 +243,14 @@ void ethernet_state_machine_update() {
                     Ethernet.maintain();
                 }
             }
+            
+            // Periodic DHCP retry while on fallback static IP
+            if (ethState.dhcpFallbackActive && retainedData.network.dhcp_enabled) {
+                if (now - ethState.lastDhcpRetry >= EthernetStateMachine::DHCP_RETRY_INTERVAL) {
+                    ethState.lastDhcpRetry = now;
+                    ethState.enterState(ETH_STATE_DHCP_RETRY);
+                }
+            }
             break;
         }
         
@@ -310,6 +325,8 @@ void ethernet_state_machine_update() {
             display_state_msg("     INIT     ");
             Serial.println("[ETH] Starting initialization");
             ethState.initCycle++;
+            ethState.retryCount = 0;         // Fresh start on every init cycle
+            ethState.dhcpFallbackActive = false; // Clear session fallback
             
             spi_select(SPI_None);
             Ethernet.init(ETH_CS_pin);
@@ -327,7 +344,7 @@ void ethernet_state_machine_update() {
                 ethState.linkEstablished = true;
                 
                 auto& network = retainedData.network;
-                if (network.dhcp_enabled) {
+                if (network.dhcp_enabled && !ethState.dhcpFallbackActive) {
                     ethState.enterState(ETH_STATE_INIT_DHCP);
                 } else {
                     ethState.enterState(ETH_STATE_INIT_STATIC);
@@ -355,17 +372,17 @@ void ethernet_state_machine_update() {
                 // Note: Ethernet.begin() with just MAC does DHCP - this CAN block
                 // For truly non-blocking DHCP, you'd need to modify the Ethernet library
                 // or use a different approach. For now, we'll do it here but with a timeout.
-                int result = Ethernet.begin(local_mac);
+                int result = Ethernet.begin(local_mac, 10000, 4000); // 10s timeout, 4s response
                 ethState.dhcpInProgress = false;
                 
                 if (result == 0) {
                     Serial.println("[ETH] DHCP failed");
                     ethState.retryCount++;
                     if (ethState.retryCount >= 3) {
-                        // Switch to static IP as fallback
-                        retainedData.network.dhcp_enabled = false;
-                        flash_store_retained_data();
-                        Serial.println("[ETH] Falling back to static IP");
+                        // Use static IP for this session only — do NOT persist
+                        // so DHCP will be retried on next power cycle or config change
+                        ethState.dhcpFallbackActive = true;
+                        Serial.println("[ETH] Falling back to static IP (session only)");
                     }
                     ethState.enterState(ETH_STATE_ERROR);
                 } else {
@@ -414,8 +431,8 @@ void ethernet_state_machine_update() {
         }
         
         case ETH_STATE_INIT_STATIC: {
-            display_state_msg("   STATIC IP  ");
-            Serial.println("[ETH] Configuring static IP");
+            display_state_msg(ethState.dhcpFallbackActive ? " FALLBACK IP  " : "   STATIC IP  ");
+            Serial.printf("[ETH] Configuring %s IP\n", ethState.dhcpFallbackActive ? "fallback static" : "static");
             
             auto& network = retainedData.network;
             Ethernet.begin(local_mac, network.ip, network.dns, network.gateway, network.subnet);
@@ -423,10 +440,8 @@ void ethernet_state_machine_update() {
             IPAddress myIP = Ethernet.localIP();
             if (myIP[0] == 0) {
                 Serial.println("[ETH] Static IP configuration failed");
-                // Fall back to DHCP
-                network.dhcp_enabled = true;
-                flash_store_retained_data();
-                ethState.enterState(ETH_STATE_INIT_DHCP);
+                ethState.dhcpFallbackActive = false; // Clear fallback so DHCP can retry
+                ethState.enterState(ETH_STATE_ERROR);
             } else {
                 local_ip[0] = myIP[0];
                 local_ip[1] = myIP[1];
@@ -468,6 +483,73 @@ void ethernet_state_machine_update() {
         }
         
         // -----------------------------------------------------------------
+        // DHCP RETRY - Quick DHCP attempt while on fallback static IP
+        // -----------------------------------------------------------------
+        case ETH_STATE_DHCP_RETRY: {
+            Serial.println("[ETH] DHCP retry...");
+            
+            spi_select(SPI_Ethernet);
+            IWatchdog.reload();
+            int result = Ethernet.begin(local_mac,
+                EthernetStateMachine::DHCP_RETRY_TIMEOUT,
+                EthernetStateMachine::DHCP_RETRY_RESPONSE);
+            IWatchdog.reload();
+            
+            if (result != 0) {
+                // DHCP succeeded — update everything
+                IPAddress myIP = Ethernet.localIP();
+                local_ip[0] = myIP[0];
+                local_ip[1] = myIP[1];
+                local_ip[2] = myIP[2];
+                local_ip[3] = myIP[3];
+                
+                auto& network = retainedData.network;
+                network.ip[0] = local_ip[0];
+                network.ip[1] = local_ip[1];
+                network.ip[2] = local_ip[2];
+                network.ip[3] = local_ip[3];
+                
+                IPAddress subnet = Ethernet.subnetMask();
+                network.subnet[0] = subnet[0]; network.subnet[1] = subnet[1];
+                network.subnet[2] = subnet[2]; network.subnet[3] = subnet[3];
+                
+                IPAddress gateway = Ethernet.gatewayIP();
+                network.gateway[0] = gateway[0]; network.gateway[1] = gateway[1];
+                network.gateway[2] = gateway[2]; network.gateway[3] = gateway[3];
+                
+                IPAddress dns = Ethernet.dnsServerIP();
+                network.dns[0] = dns[0]; network.dns[1] = dns[1];
+                network.dns[2] = dns[2]; network.dns[3] = dns[3];
+                
+                flash_store_retained_data();
+                
+                sprintf(ip_address, "%d.%d.%d.%d", local_ip[0], local_ip[1], local_ip[2], local_ip[3]);
+                Serial.printf("[ETH] DHCP retry SUCCESS: %s\n", ip_address);
+                
+                ethState.dhcpFallbackActive = false;
+                
+                // Restart server with new IP
+                spi_select(SPI_Ethernet);
+                server.begin();
+                ethState.serverReady = true;
+                update_ip_status();
+                ota_reconnect();
+                ethState.enterState(ETH_STATE_IDLE);
+            } else {
+                // Failed — reconfigure static IP and resume
+                auto& network = retainedData.network;
+                Ethernet.begin(local_mac, network.ip, network.dns, network.gateway, network.subnet);
+                
+                // Restart server on the static IP
+                spi_select(SPI_Ethernet);
+                server.begin();
+                ethState.serverReady = true;
+                ethState.enterState(ETH_STATE_IDLE);
+            }
+            break;
+        }
+        
+        // -----------------------------------------------------------------
         // DISCONNECTED - Link is down
         // -----------------------------------------------------------------
         case ETH_STATE_DISCONNECTED: {
@@ -492,6 +574,7 @@ void ethernet_state_machine_update() {
                 
                 if (linkStatus == LinkON) {
                     Serial.println("[ETH] Link restored");
+                    ethState.dhcpFallbackActive = false; // Fresh DHCP attempt on reconnect
                     ethState.enterState(ETH_STATE_INIT_START);
                 }
             }
