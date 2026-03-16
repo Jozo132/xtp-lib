@@ -1,7 +1,18 @@
 #pragma once
 
 #include <Arduino.h>
-#include "xtp_config.h"
+
+// Projects can override RetainedData_t by defining CUSTOM_RETAINED_DATA
+// and providing a "xtp_retain_custom.h" header in their include path.
+// The custom header must define:
+//   - struct RetainedData_t { ... };
+//   - RetainedData_t retainedData;
+//   - const RetainedData_t retainedDataDefault = { ... };
+//   - constexpr int RETAINED_DATA_SIZE = sizeof(retainedDataDefault);
+
+#ifdef CUSTOM_RETAINED_DATA
+#include "xtp_retain_custom.h"
+#else
 
 struct RetainedData_t {
     int32_t reboot_count;
@@ -36,3 +47,5 @@ const RetainedData_t retainedDataDefault = {
 };
 
 constexpr int RETAINED_DATA_SIZE = sizeof(retainedDataDefault);
+
+#endif // CUSTOM_RETAINED_DATA
