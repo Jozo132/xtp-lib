@@ -41,6 +41,7 @@
 #include "xtp_http_server.h"
 #ifdef XTP_WEBSOCKETS
 #include "xtp_websocket.h"
+#include "xtp_ws_client.h"
 #endif
 
 void xtp_setup() {
