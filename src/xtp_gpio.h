@@ -25,9 +25,32 @@ void gpio_custom_init(void);
 #define PX15_MSK  (1U << 15)
 
 bool gpio_setup_done = false;
+
+// OTA GPIO preservation - check backup register and pre-set ODR BEFORE pinMode
+// This ensures outputs never glitch LOW during startup after OTA reset
+#define OTA_GPIO_BACKUP_REG_READ   RTC->BKP0R
+#define OTA_GPIO_MAGIC_VALUE       0xAA550000
+
+static inline void gpio_preset_ota_outputs() {
+    uint32_t bkp = OTA_GPIO_BACKUP_REG_READ;
+    if ((bkp & 0xFFFF0000) == OTA_GPIO_MAGIC_VALUE) {
+        // Valid OTA GPIO state found - pre-set GPIOC ODR before pinMode
+        // This way when pinMode configures pin as output, ODR already has correct value
+        RCC->AHB1ENR |= RCC_AHB1ENR_GPIOCEN; // Ensure GPIOC clock is enabled
+        uint32_t odr = GPIOC->ODR;
+        odr &= ~0x0F;
+        odr |= (bkp & 0x0F);
+        GPIOC->ODR = odr;
+    }
+}
+
 void gpio_setup() {
     if (gpio_setup_done) return;
     gpio_setup_done = true;
+    
+    // Pre-set output ODR from backup register BEFORE configuring pins as outputs
+    gpio_preset_ota_outputs();
+    
     analogReadResolution(12);
 
     pinMode(LED_BUILTIN, OUTPUT);
