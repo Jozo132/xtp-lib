@@ -26,22 +26,43 @@ void gpio_custom_init(void);
 
 bool gpio_setup_done = false;
 
-// OTA GPIO preservation - check backup register and pre-set ODR BEFORE pinMode
-// This ensures outputs never glitch LOW during startup after OTA reset
+// =============================================================================
+// OTA GPIO preservation - restore outputs BEFORE main() runs
+// =============================================================================
+// After reset, GPIOs default to inputs (MODER=0). Setting ODR alone doesn't help.
+// We must configure pins as outputs (MODER) immediately, not just ODR.
+// Constructor with priority 101 runs before main() but after basic init.
 #define OTA_GPIO_BACKUP_REG_READ   RTC->BKP0R
 #define OTA_GPIO_MAGIC_VALUE       0xAA550000
 
-static inline void gpio_preset_ota_outputs() {
+// This runs BEFORE main() - as early as possible after reset
+__attribute__((constructor(101))) 
+static void gpio_early_ota_restore() {
     uint32_t bkp = OTA_GPIO_BACKUP_REG_READ;
     if ((bkp & 0xFFFF0000) == OTA_GPIO_MAGIC_VALUE) {
-        // Valid OTA GPIO state found - pre-set GPIOC ODR before pinMode
-        // This way when pinMode configures pin as output, ODR already has correct value
-        RCC->AHB1ENR |= RCC_AHB1ENR_GPIOCEN; // Ensure GPIOC clock is enabled
+        // Enable GPIOC clock first
+        RCC->AHB1ENR |= RCC_AHB1ENR_GPIOCEN;
+        __DSB(); // Ensure clock is enabled before accessing GPIO
+        
+        // Set ODR for PC0-PC3
         uint32_t odr = GPIOC->ODR;
         odr &= ~0x0F;
         odr |= (bkp & 0x0F);
         GPIOC->ODR = odr;
+        
+        // Configure PC0-PC3 as outputs (MODER: 01 for each pin)
+        // Bits 0-7 control PC0-PC3, set to 0x55 = 01 01 01 01
+        uint32_t moder = GPIOC->MODER;
+        moder &= ~0xFF;  // Clear bits 0-7
+        moder |= 0x55;   // Set PC0-PC3 as outputs
+        GPIOC->MODER = moder;
     }
+}
+
+// Legacy function - still called in gpio_setup for safety
+static inline void gpio_preset_ota_outputs() {
+    // Now just a no-op since gpio_early_ota_restore() already ran
+    // Keep for backwards compatibility
 }
 
 void gpio_setup() {
