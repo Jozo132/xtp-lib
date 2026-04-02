@@ -35,9 +35,22 @@ bool gpio_setup_done = false;
 #define OTA_GPIO_BACKUP_REG_READ   RTC->BKP0R
 #define OTA_GPIO_MAGIC_VALUE       0xAA550000
 
+// OTA GPIO holdoff counter - prevents varovanje_task from overwriting outputs
+// Must be defined in main.cpp as: volatile uint32_t ota_gpio_holdoff_ms = 0;
+extern volatile uint32_t ota_gpio_holdoff_ms;
+#define OTA_GPIO_HOLDOFF_TIME_MS_DEFAULT 5000
+
 // This runs BEFORE main() - as early as possible after reset
 __attribute__((constructor(101))) 
 static void gpio_early_ota_restore() {
+    // Enable PWR clock to access backup domain
+    RCC->APB1ENR |= RCC_APB1ENR_PWREN;
+    __DSB();
+    
+    // Enable backup domain access (required to read RTC backup registers)
+    PWR->CR |= PWR_CR_DBP;
+    __DSB();
+    
     uint32_t bkp = OTA_GPIO_BACKUP_REG_READ;
     if ((bkp & 0xFFFF0000) == OTA_GPIO_MAGIC_VALUE) {
         // Enable GPIOC clock first
@@ -56,6 +69,9 @@ static void gpio_early_ota_restore() {
         moder &= ~0xFF;  // Clear bits 0-7
         moder |= 0x55;   // Set PC0-PC3 as outputs
         GPIOC->MODER = moder;
+        
+        // Set holdoff to prevent varovanje_task from overwriting for 2 seconds
+        ota_gpio_holdoff_ms = OTA_GPIO_HOLDOFF_TIME_MS_DEFAULT;
     }
 }
 
@@ -102,8 +118,12 @@ void gpio_setup() {
     pinMode(OUTPUT_2_pin, OUTPUT);
     pinMode(OUTPUT_3_pin, OUTPUT);
 
+    // W5500 Ethernet chip hardware reset sequence
     pinMode(ETH_RST_pin, OUTPUT);
-    digitalWrite(ETH_RST_pin, HIGH);
+    digitalWrite(ETH_RST_pin, LOW);   // Assert reset
+    delay(10);                         // Hold reset for 10ms
+    digitalWrite(ETH_RST_pin, HIGH);  // Release reset
+    delay(150);                        // Wait for W5500 to initialize (PLL lock ~100ms)
 
 #ifdef XTP_ADC_DMA // High-speed ADC with DMA
     ___XTP_initADC_DMA();
