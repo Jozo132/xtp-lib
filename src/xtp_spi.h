@@ -19,6 +19,17 @@ bool spi_initialized = false;
 void spi_setup() {
     if (spi_initialized) return;
     spi_initialized = true;
+    
+    // Set up all CS pins as outputs (active-low, so start HIGH)
+    pinMode(ETH_CS_pin, OUTPUT);
+    digitalWrite(ETH_CS_pin, HIGH);
+    pinMode(FLASH_CS_pin, OUTPUT);
+    digitalWrite(FLASH_CS_pin, HIGH);
+#ifdef AUX_CS_pin
+    pinMode(AUX_CS_pin, OUTPUT);
+    digitalWrite(AUX_CS_pin, HIGH);
+#endif
+    
     SPI.setMOSI(SPI_MOSI_pin);
     SPI.setMISO(SPI_MISO_pin);
     SPI.setSCLK(SPI_SCK_pin);
