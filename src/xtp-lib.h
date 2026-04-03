@@ -39,6 +39,7 @@
 
 #include "rest_server.h"
 #include "xtp_http_server.h"
+#include "xtp_tcp_client.h"
 #ifdef XTP_WEBSOCKETS
 #include "xtp_websocket.h"
 #include "xtp_ws_client.h"
