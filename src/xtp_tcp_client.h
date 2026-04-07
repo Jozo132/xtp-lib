@@ -149,6 +149,8 @@ private:
     struct TxSlot {
         TxState     state = TX_FREE;
         IPAddress   host;
+        char        hostStr[64] = {};     // Hostname or IP string
+        bool        useHostStr = false;   // true = connect via hostStr
         uint16_t    port = 0;
         uint8_t     payload[XTP_TCP_TX_BUF_SIZE];
         uint16_t    payloadLen = 0;
@@ -168,6 +170,8 @@ private:
             responseLen = 0;
             callback = nullptr;
             waitForResponse = false;
+            useHostStr = false;
+            hostStr[0] = '\0';
         }
     };
 
@@ -459,7 +463,15 @@ private:
         // In keep-alive mode: if already connected to same host:port, skip connect
         if (_keepAlive && _state == TCP_CONNECTED) {
             // Check if target matches current connection
-            if (slot.host == _host && slot.port == _port) {
+            bool sameTarget = (slot.port == _port);
+            if (sameTarget) {
+                if (slot.useHostStr) {
+                    sameTarget = _useHostStr && strcmp(slot.hostStr, _hostStr) == 0;
+                } else {
+                    sameTarget = !_useHostStr && slot.host == _host;
+                }
+            }
+            if (sameTarget) {
                 slot.state = TX_SENDING;
                 XTP_TCP_LOGF("[tcp] tx[%d] reusing keep-alive connection\n", next);
                 return;
@@ -472,14 +484,25 @@ private:
         if (_state == TCP_IDLE) {
             slot.state = TX_CONNECTING;
             slot.startTime = now;
-            _host = slot.host;
             _port = slot.port;
-            _useHostStr = false;
+            if (slot.useHostStr) {
+                strncpy(_hostStr, slot.hostStr, sizeof(_hostStr) - 1);
+                _hostStr[sizeof(_hostStr) - 1] = '\0';
+                _useHostStr = !_host.fromString(_hostStr);
+            } else {
+                _host = slot.host;
+                _useHostStr = false;
+            }
             _hasTarget = true;
             _lastAttempt = 0;
             _disconnectTime = 0;
-            XTP_TCP_LOGF("[tcp] tx[%d] initiating connection to %d.%d.%d.%d:%d\n",
-                         next, slot.host[0], slot.host[1], slot.host[2], slot.host[3], slot.port);
+            if (slot.useHostStr) {
+                XTP_TCP_LOGF("[tcp] tx[%d] initiating connection to %s:%d\n",
+                             next, slot.hostStr, slot.port);
+            } else {
+                XTP_TCP_LOGF("[tcp] tx[%d] initiating connection to %d.%d.%d.%d:%d\n",
+                             next, slot.host[0], slot.host[1], slot.host[2], slot.host[3], slot.port);
+            }
         } else if (_state == TCP_CONNECTED) {
             slot.state = TX_SENDING;
         } else {
@@ -576,12 +599,59 @@ public:
         return id;
     }
 
-    // Convenience: send a string
+    // Convenience: send a string (IPAddress)
     int8_t send(IPAddress host, uint16_t port, const char* str,
                 TxDoneCallback callback = nullptr,
                 bool waitForResponse = false,
                 uint32_t responseTimeout = XTP_TCP_TX_RESPONSE_TIMEOUT_MS) {
         return send(host, port, (const uint8_t*)str, strlen(str),
+                    callback, waitForResponse, responseTimeout);
+    }
+
+    // Send with hostname/IP string + binary data
+    int8_t send(const char* host, uint16_t port,
+                const uint8_t* data, uint16_t len,
+                TxDoneCallback callback = nullptr,
+                bool waitForResponse = false,
+                uint32_t responseTimeout = XTP_TCP_TX_RESPONSE_TIMEOUT_MS) {
+        int8_t id = findFreeSlot();
+        if (id < 0) {
+            XTP_TCP_LOGLN("[tcp] tx queue full");
+            return -1;
+        }
+        if (len > XTP_TCP_TX_BUF_SIZE) {
+            XTP_TCP_LOGF("[tcp] tx payload too large (%u > %u)\n", len, (unsigned)XTP_TCP_TX_BUF_SIZE);
+            return -1;
+        }
+
+        TxSlot& slot = _txSlots[id];
+        slot.reset();
+        slot.state = TX_PENDING;
+        strncpy(slot.hostStr, host, sizeof(slot.hostStr) - 1);
+        slot.hostStr[sizeof(slot.hostStr) - 1] = '\0';
+        // Try to parse as IP — if it works, store in slot.host too for fast comparison
+        slot.useHostStr = !slot.host.fromString(host);
+        slot.port = port;
+        memcpy(slot.payload, data, len);
+        slot.payloadLen = len;
+        slot.startTime = millis();
+        slot.timeout = _connectTimeout;
+        slot.responseTimeout = responseTimeout;
+        slot.waitForResponse = waitForResponse;
+        slot.callback = callback;
+
+        XTP_TCP_LOGF("[tcp] tx[%d] queued %u bytes to %s:%d%s\n",
+                     id, len, host, port,
+                     waitForResponse ? " (await response)" : "");
+        return id;
+    }
+
+    // Send with hostname/IP string + string data
+    int8_t send(const char* host, uint16_t port, const char* str,
+                TxDoneCallback callback = nullptr,
+                bool waitForResponse = false,
+                uint32_t responseTimeout = XTP_TCP_TX_RESPONSE_TIMEOUT_MS) {
+        return send(host, port, (const uint8_t*)str, (uint16_t)strlen(str),
                     callback, waitForResponse, responseTimeout);
     }
 
