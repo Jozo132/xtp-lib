@@ -33,6 +33,7 @@ void sntp_sync(const char* server, uint16_t port = 123) {
             break;
         }
     }
+    sntp_client.stop(); // Free the UDP socket immediately after receiving or timeout
     if (millis() - start >= 1000) {
         // Timeout
         Serial.println("SNTP request timed out");
