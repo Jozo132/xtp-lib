@@ -441,6 +441,7 @@ private:
         worker.client.stop();
         forceCloseClientSocket(worker.client);
         XTP_TCP_SPI_SELECT(XTP_TCP_SPI_NONE);
+        _disconnectTime = millis();
         clearWorker(workerIndex);
     }
 
@@ -680,6 +681,10 @@ private:
             if (_txWorkers[i].txId >= 0) {
                 processWorker(i, now);
             }
+        }
+
+        if (_disconnectTime != 0 && (now - _disconnectTime) < XTP_TCP_SOCKET_RELEASE_MS) {
+            return;
         }
 
         while (true) {
