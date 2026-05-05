@@ -36,8 +36,19 @@ bool gpio_setup_done = false;
 #define OTA_GPIO_MAGIC_VALUE       0xAA550000
 
 // OTA GPIO holdoff counter - prevents varovanje_task from overwriting outputs
-// Must be defined in main.cpp as: volatile uint32_t ota_gpio_holdoff_ms = 0;
-extern volatile uint32_t ota_gpio_holdoff_ms;
+// Optionally define `volatile uint32_t ota_gpio_holdoff_ms = 0;` in user code if
+// you want to share the holdoff state. Otherwise the library falls back to an
+// internal counter automatically.
+extern volatile uint32_t ota_gpio_holdoff_ms __attribute__((weak));
+
+inline volatile uint32_t& xtp_ota_gpio_holdoff_counter() {
+    static volatile uint32_t fallback = 0;
+    if (&ota_gpio_holdoff_ms != nullptr) {
+        return ota_gpio_holdoff_ms;
+    }
+    return fallback;
+}
+
 #define OTA_GPIO_HOLDOFF_TIME_MS_DEFAULT 5000
 
 // This runs BEFORE main() - as early as possible after reset
@@ -71,7 +82,7 @@ static void gpio_early_ota_restore() {
         GPIOC->MODER = moder;
         
         // Set holdoff to prevent varovanje_task from overwriting for 2 seconds
-        ota_gpio_holdoff_ms = OTA_GPIO_HOLDOFF_TIME_MS_DEFAULT;
+        xtp_ota_gpio_holdoff_counter() = OTA_GPIO_HOLDOFF_TIME_MS_DEFAULT;
     }
 }
 

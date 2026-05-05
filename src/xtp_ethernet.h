@@ -9,6 +9,7 @@
 #include "xtp_oled.h"
 #include "xtp_spi.h"
 #include "xtp_flash.h"
+#include "xtp_tcp_client.h"
 
 #ifdef UDP_RX_PACKET_MAX_SIZE
 #undef UDP_RX_PACKET_MAX_SIZE
@@ -889,6 +890,9 @@ void ethernet_loop() {
     
     // Process any pending async messages
     processAsyncMessage();
+
+    // Service registered async TCP clients.
+    XtpTcpClient::serviceAll(ethState);
     
     // Handle IP null timeout (safety check)
     bool ip_is_null = local_ip[0] == 0 && local_ip[1] == 0 && local_ip[2] == 0 && local_ip[3] == 0;
