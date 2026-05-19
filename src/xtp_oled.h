@@ -432,6 +432,16 @@ void oled_state_machine_update() {
 // Public API (non-blocking)
 // ============================================================================
 
+void oled_clear_buffer() {
+#ifndef DISABLE_OLED
+    if (!oled_initialized) {
+        _oled_init_buffers();
+    }
+    memset(_oled_data_new, ' ', OLED_CHARS);
+    _oled_data_new[OLED_CHARS] = 0;
+#endif
+}
+
 // Queue a message for display (non-blocking)
 // Pre-maps UTF-8 characters to single-byte indices for consistent buffer handling
 void displayMsg(const char* message) {

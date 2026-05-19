@@ -48,6 +48,8 @@ void ota_setup() {
     OTA.onRequest([]() {
         if (ota_notify) ota_notify();
 
+        oled_clear_buffer();
+        oled_print("OTA Firmware Update", 0, 0);
         xtp_ssd1306_clear();
         xtp_ssd1306_setCursor(0, 0);
         xtp_ssd1306_print("OTA Firmware Update");
@@ -82,12 +84,14 @@ void ota_setup() {
             Serial.printf("Progress: %6u/%6u (%3.1f%%)\n", progress, total, prog);
             char msg[12];
             sprintf(msg, "%3.1f%%", prog);
+            oled_print(msg, 1, 2);
             xtp_ssd1306_setCursor(1, 2);  // Column 1, Row 2 (approx 6px, 16px)
             xtp_ssd1306_print(msg);
         }
         });
     OTA.onEnd([]() {
         IWatchdog.reload();
+        oled_print("Done - RESTARTING", 0, 5);
         xtp_ssd1306_setCursor(0, 5);  // Row 5 (approx 40px)
         xtp_ssd1306_print("Done - RESTARTING");
         Serial.println("\nEnd");
@@ -104,6 +108,7 @@ void ota_setup() {
         else if (error == OTA_END_ERROR) sprintf(msg, "%sEnd Failed", msg);
         Serial.println(msg);
 
+        oled_print(msg, 0, 5);
         xtp_ssd1306_setCursor(0, 5);  // Row 5 (approx 40px)
         xtp_ssd1306_print(msg);
         if (ota_update_in_progress) {
@@ -115,6 +120,7 @@ void ota_setup() {
             TIM3->CR1 |= TIM_CR1_CEN;         // Restart TIM3
 #endif
             thread_resume();
+            oled_clear_buffer();
             xtp_ssd1306_clear();
             if (ota_resume) ota_resume();
         }
