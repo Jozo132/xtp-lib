@@ -138,8 +138,8 @@ char mac_address[18] = "";
 //EthernetUDP server; // UDP server port
 EthernetServer server(local_port);  // TCP server port
 
-// Ethernet TCP client for analytics
-EthernetClient analytics_target;
+// Shared async TCP client for sketch-level analytics publishing.
+XtpTcpClient analytics_target;
 
 // ============================================================================
 // Display Helpers
