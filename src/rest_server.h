@@ -3,12 +3,21 @@
 
 #include <Ethernet.h>
 #include <utility/w5100.h>
+#include "rest_server_request_parser.h"
 #include "xtp_timing.h"
 
 #define HTTP_MAX_ARGS 32
 #define HTTP_MAX_ENDPOINTS 32
 #define HTTP_MAX_REMAPS 32
 #define HTTP_MAX_BODY_SIZE 1024
+
+#ifndef HTTP_MAX_HEADERS
+#define HTTP_MAX_HEADERS 32
+#endif
+
+#ifndef HTTP_MAX_HEADER_SIZE
+#define HTTP_MAX_HEADER_SIZE 512
+#endif
 
 #ifndef HTTP_RES_CHUNK_SIZE
 #define HTTP_RES_CHUNK_SIZE 2048
@@ -90,14 +99,17 @@ public:
     char _uri[64];
     IPAddress _ip;
     HTTPMethod _method;
+    using Argument = RestServerRequestField;
     int _argc;
-    struct Argument {
-        char name[64];
-        char value[64];
-    } _args[HTTP_MAX_ARGS];
+    int _headerc;
+    Argument _args[HTTP_MAX_ARGS];
+    Argument _headers[HTTP_MAX_HEADERS];
 
-    char body[HTTP_MAX_BODY_SIZE];
+    char body[HTTP_MAX_BODY_SIZE + 1];
     int body_length = 0;
+    RestServerReceiveState _receive_state;
+    bool _request_head_parsed = false;
+    bool _form_args_parsed = false;
 
 
     typedef void (*EndpointHandler)(void);
@@ -135,8 +147,22 @@ public:
     State state = WAITING;
     EthernetClient client;
     
-    RestServer(EthernetServer& server) { this->server = &server; }
+    RestServer(EthernetServer& server) {
+        this->server = &server;
+        resetRequestState();
+    }
     void begin() { _last_socket_cleanup = millis(); }
+
+    void resetRequestState() {
+        _uri[0] = '\0';
+        _argc = 0;
+        _headerc = 0;
+        body_length = 0;
+        body[0] = '\0';
+        restServerResetReceiveState(_receive_state);
+        _request_head_parsed = false;
+        _form_args_parsed = false;
+    }
     
     // Force close a specific socket on W5500
     void forceCloseSocket(uint8_t sock) {
@@ -354,10 +380,69 @@ public:
     }
 
     const char* readHeader(const char* name) {
-        for (int i = 0; i < _argc; i++) {
-            if (strcmp(name, _args[i].name) == 0) return _args[i].value;
+        for (int i = 0; i < _headerc; i++) {
+            if (restServerEqualsIgnoreCase(name, _headers[i].name)) return _headers[i].value;
         }
         return nullptr;
+    }
+
+    bool consumeRequestData() {
+        char chunk[128];
+        bool read_any = false;
+
+        while (client.available()) {
+            int available = client.available();
+            int to_read = available < (int) sizeof(chunk) ? available : (int) sizeof(chunk);
+            int bytes_read = client.read((uint8_t*) chunk, to_read);
+            if (bytes_read <= 0) break;
+
+            restServerAppendChunk(_receive_state, chunk, bytes_read, body, HTTP_MAX_BODY_SIZE, body_length);
+            read_any = true;
+            _last_ms = millis();
+
+            if (_receive_state.header_overflow) break;
+        }
+
+        body[body_length] = '\0';
+        return read_any;
+    }
+
+    bool parseRequestHead(char* method, int method_size) {
+        _argc = 0;
+        _headerc = 0;
+        _uri[0] = '\0';
+
+        if (!restServerParseRequestHead(
+                _receive_state,
+                method, method_size,
+                _uri, sizeof(_uri),
+                _headers, HTTP_MAX_HEADERS, _headerc,
+                _args, HTTP_MAX_ARGS, _argc,
+                _receive_state.expected_body_length)) {
+            return false;
+        }
+
+        if (_receive_state.expected_body_length == 0 && _receive_state.received_body_length > 0) {
+            _receive_state.expected_body_length = _receive_state.received_body_length;
+        }
+
+        _request_head_parsed = true;
+        return true;
+    }
+
+    bool requestBodyReady() {
+        return _request_head_parsed && restServerRequestComplete(_receive_state);
+    }
+
+    bool hasFormBody() {
+        const char* content_type = readHeader("Content-Type");
+        return content_type != nullptr && restServerStartsWithIgnoreCase(content_type, "application/x-www-form-urlencoded");
+    }
+
+    void parseFormBodyArgsIfNeeded() {
+        if (_form_args_parsed || !hasFormBody()) return;
+        restServerParseFormBody(body, body_length, _args, HTTP_MAX_ARGS, _argc);
+        _form_args_parsed = true;
     }
 
     // Handle incoming requests with a state machine to avoid blocking the event loop of the microcontroller
@@ -392,6 +477,7 @@ public:
             }
             
             _ip = client.remoteIP();
+            resetRequestState();
             _last_ms = t;
             enterState(RECEIVING);
             break;
@@ -429,130 +515,62 @@ public:
             
             XTP_TIMING_START(XTP_TIME_HTTP_RECEIVE);
             {
-                char method[16];
-                Serial.printf("[%d.%d.%d.%d]: ", _ip[0], _ip[1], _ip[2], _ip[3]);
-                parseMethod(method);
-                parseUri(_uri);
-                
-                // Skip whitespace and CRLF
-                while (client.available()) {
-                    char c = client.peek();
-                    if (c == ' ' || c == '\r' || c == '\n') {
-                        client.read();
-                    } else {
-                        break;
-                    }
-                }
-                
-                bool is_get = strcmp(method, "GET") == 0;
-                bool is_post = strcmp(method, "POST") == 0;
-                if (is_get) {
-                    _method = HTTP_GET;
-                } else if (is_post) {
-                    _method = HTTP_POST;
-                } else {
-                    Serial.printf("[HTTP] Unsupported method: %s\n", method);
-                    client.print("HTTP/1.1 405 Method Not Allowed\r\n");
-                    client.print("Connection: close\r\n");
-                    client.print("\r\n");
-                    _requests_failed++;
-                    initiateClientClose();
+                if (!consumeRequestData()) {
+                    XTP_TIMING_END(XTP_TIME_HTTP_RECEIVE);
                     XTP_TIMING_END(XTP_TIME_HTTP_HANDLE);
                     return;
                 }
-                
-                // Parse headers and body (optimized with bulk reads)
-                if (is_get || is_post) {
-                    _argc = 0;
-                    uint32_t parse_deadline = t + 100;
-                    
-                    // Read all available data into a local buffer for faster parsing
-                    char headerBuf[512];
-                    int headerLen = 0;
-                    int available = client.available();
-                    if (available > 0) {
-                        headerLen = min(available, (int)sizeof(headerBuf) - 1);
-                        client.read((uint8_t*)headerBuf, headerLen);
-                        headerBuf[headerLen] = '\0';
-                    }
-                    
-                    // Parse headers from buffer
-                    int pos = 0;
-                    while (pos < headerLen && _argc < HTTP_MAX_ARGS) {
-                        // Skip whitespace and newlines
-                        while (pos < headerLen && (headerBuf[pos] == ' ' || headerBuf[pos] == '\r' || headerBuf[pos] == '\n')) {
-                            pos++;
-                        }
-                        if (pos >= headerLen) break;
-                        
-                        // Check if it's a header (starts with A-Z)
-                        char c = headerBuf[pos];
-                        bool isHeader = c >= 'A' && c <= 'Z';
-                        if (!isHeader) break;  // End of headers
-                        
-                        // Read header name
-                        int nameStart = pos;
-                        while (pos < headerLen && headerBuf[pos] != ':' && headerBuf[pos] != '\r' && headerBuf[pos] != '\n') {
-                            pos++;
-                        }
-                        int nameLen = pos - nameStart;
-                        if (nameLen > 63) nameLen = 63;
-                        
-                        if (pos < headerLen && headerBuf[pos] == ':') {
-                            pos++;  // Skip ':'
-                            // Skip leading space after colon
-                            while (pos < headerLen && headerBuf[pos] == ' ') pos++;
-                            
-                            // Check if we should skip this header (common unneeded ones)
-                            bool skipHeader = false;
-                            if (nameLen == 6 && strncmp(&headerBuf[nameStart], "Accept", 6) == 0) skipHeader = true;
-                            else if (nameLen == 10 && strncmp(&headerBuf[nameStart], "User-Agent", 10) == 0) skipHeader = true;
-                            else if (nameLen == 10 && strncmp(&headerBuf[nameStart], "Connection", 10) == 0) skipHeader = true;
-                            else if (nameLen == 15 && strncmp(&headerBuf[nameStart], "Accept-Encoding", 15) == 0) skipHeader = true;
-                            else if (nameLen == 15 && strncmp(&headerBuf[nameStart], "Accept-Language", 15) == 0) skipHeader = true;
-                            else if (nameLen == 13 && strncmp(&headerBuf[nameStart], "Cache-Control", 13) == 0) skipHeader = true;
-                            else if (nameLen == 3 && strncmp(&headerBuf[nameStart], "DNT", 3) == 0) skipHeader = true;
-                            
-                            // Read value
-                            int valueStart = pos;
-                            while (pos < headerLen && headerBuf[pos] != '\r' && headerBuf[pos] != '\n') {
-                                pos++;
-                            }
-                            int valueLen = pos - valueStart;
-                            if (valueLen > 63) valueLen = 63;
-                            
-                            if (!skipHeader) {
-                                // Store header
-                                memcpy(_args[_argc].name, &headerBuf[nameStart], nameLen);
-                                _args[_argc].name[nameLen] = '\0';
-                                memcpy(_args[_argc].value, &headerBuf[valueStart], valueLen);
-                                _args[_argc].value[valueLen] = '\0';
-                                _argc++;
-                            }
-                        }
-                        
-                        // Skip to next line
-                        while (pos < headerLen && headerBuf[pos] != '\n') pos++;
-                        if (pos < headerLen) pos++;  // Skip newline
-                    }
-                    
-                    // Read body (remaining data after headers)
-                    body_length = 0;
-                    // Check for body in buffer (after \r\n\r\n)
-                    if (pos < headerLen) {
-                        int remaining = headerLen - pos;
-                        if (remaining > HTTP_MAX_BODY_SIZE) remaining = HTTP_MAX_BODY_SIZE;
-                        memcpy(body, &headerBuf[pos], remaining);
-                        body_length = remaining;
-                    }
-                    // Read any additional body data from socket
-                    uint32_t bodyDeadline = millis() + 20;  // Short timeout for body
-                    while (client.available() && body_length < HTTP_MAX_BODY_SIZE && millis() < bodyDeadline) {
-                        int toRead = min(client.available(), HTTP_MAX_BODY_SIZE - body_length);
-                        body_length += client.read((uint8_t*)&body[body_length], toRead);
-                    }
-                    body[body_length] = '\0';
+
+                if (_receive_state.header_overflow) {
+                    Serial.println("[HTTP] Request headers too large");
+                    client.print("HTTP/1.1 431 Request Header Fields Too Large\r\n");
+                    client.print("Connection: close\r\n\r\n");
+                    _requests_failed++;
+                    initiateClientClose();
+                    XTP_TIMING_END(XTP_TIME_HTTP_RECEIVE);
+                    XTP_TIMING_END(XTP_TIME_HTTP_HANDLE);
+                    return;
                 }
+
+                if (_receive_state.headers_complete && !_request_head_parsed) {
+                    char method[16];
+                    if (!parseRequestHead(method, sizeof(method))) {
+                        Serial.println("[HTTP] Invalid request");
+                        client.print("HTTP/1.1 400 Bad Request\r\n");
+                        client.print("Connection: close\r\n\r\n");
+                        _requests_failed++;
+                        initiateClientClose();
+                        XTP_TIMING_END(XTP_TIME_HTTP_RECEIVE);
+                        XTP_TIMING_END(XTP_TIME_HTTP_HANDLE);
+                        return;
+                    }
+
+                    bool is_get = strcmp(method, "GET") == 0;
+                    bool is_post = strcmp(method, "POST") == 0;
+                    if (is_get) {
+                        _method = HTTP_GET;
+                    } else if (is_post) {
+                        _method = HTTP_POST;
+                    } else {
+                        Serial.printf("[HTTP] Unsupported method: %s\n", method);
+                        client.print("HTTP/1.1 405 Method Not Allowed\r\n");
+                        client.print("Connection: close\r\n\r\n");
+                        _requests_failed++;
+                        initiateClientClose();
+                        XTP_TIMING_END(XTP_TIME_HTTP_RECEIVE);
+                        XTP_TIMING_END(XTP_TIME_HTTP_HANDLE);
+                        return;
+                    }
+                }
+
+                if (!requestBodyReady()) {
+                    XTP_TIMING_END(XTP_TIME_HTTP_RECEIVE);
+                    XTP_TIMING_END(XTP_TIME_HTTP_HANDLE);
+                    return;
+                }
+
+                parseFormBodyArgsIfNeeded();
+                Serial.printf("[%d.%d.%d.%d]: ", _ip[0], _ip[1], _ip[2], _ip[3]);
             }
             XTP_TIMING_END(XTP_TIME_HTTP_RECEIVE);
             _last_ms = t;
