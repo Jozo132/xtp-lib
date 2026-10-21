@@ -7,7 +7,11 @@
 #include "xtp_spi.h"
 #include "xtp_retain.h"
 
+#if defined(XTP_3)
+SPIFlash flash(FS_CS_pin, &SPI_FS);
+#else
 SPIFlash flash(FLASH_CS_pin);
+#endif
 
 void flash_print_info();
 
@@ -19,7 +23,9 @@ void _flash_read();
 bool flash_initialized = false;
 void flash_setup() {
     if (flash_initialized) return;
+#if !defined(XTP_3)
     spi_select(SPI_Flash);
+#endif
     flash.begin();
     if (flash.error()) {
         Serial.println(flash.error(VERBOSE));
@@ -42,7 +48,9 @@ void flash_setup() {
         retainedData.reboot_count++;
         _flash_write();
     }
+#if !defined(XTP_3)
     spi_select(SPI_None);
+#endif
 }
 
 
@@ -51,7 +59,9 @@ void flash_firmware_reset() {
         Serial.println("FLASH not initialized. Cannot reset firmware");
         return;
     }
+#if !defined(XTP_3)
     spi_select(SPI_Flash);
+#endif
     Serial.println("FLASH resetting retained data to firmware default");
     int reboot_count = retainedData.reboot_count;
     int write_count = retainedData.write_count;
@@ -61,7 +71,9 @@ void flash_firmware_reset() {
     retainedData.write_count = write_count;
     retainedData.firmware_reset_count = firmware_reset_count;
     _flash_write();
+#if !defined(XTP_3)
     spi_select(SPI_None);
+#endif
 }
 
 
@@ -70,9 +82,13 @@ void flash_store_retained_data() {
         Serial.println("FLASH not initialized. Cannot store retained data");
         return;
     }
+#if !defined(XTP_3)
     spi_select(SPI_Flash);
+#endif
     _flash_write();
+#if !defined(XTP_3)
     spi_select(SPI_None);
+#endif
 }
 
 
@@ -84,7 +100,9 @@ void flash_print_info() {
             Serial.println("FLASH not initialized. Cannot get ID");
             return;
         }
+    #if !defined(XTP_3)
         spi_select(SPI_Flash);
+    #endif
         _flash_info_checked = true;
         flashInfo.JEDEC = flash.getJEDECID();
         flashInfo.manufacturer_id = flashInfo.JEDEC >> 16 & 0xFF;
@@ -94,7 +112,9 @@ void flash_print_info() {
         flashInfo.uid_b = uid64 & 0xFFFFFFFF;
         flashInfo.size = flash.getCapacity();
         flashInfo.max_page = flash.getMaxPage();
+    #if !defined(XTP_3)
         spi_select(SPI_None);
+    #endif
     }
 
     // Print in JSON format

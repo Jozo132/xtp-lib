@@ -529,7 +529,7 @@ void oled_draw() {
 
 // Spinner/ticker (non-blocking)
 int xtp_spinner_index = 0;
-int xtp_spinner_tick = 0;
+uint32_t xtp_spinner_last_frame_at = 0;
 
 void oled_ticker() {
 #ifndef DISABLE_OLED
@@ -538,13 +538,13 @@ void oled_ticker() {
     if (!oledState.isReady()) return;
     
     constexpr int spinner_count = 8;
-    constexpr int spinner_frame_duration_ms = 200;
+    constexpr uint32_t spinner_frame_duration_ms = 300 / spinner_count;
     
-    if (xtp_spinner_tick >= spinner_count * spinner_frame_duration_ms) 
-        xtp_spinner_tick = 0;
-    xtp_spinner_tick++;
-    
-    int spinner_index = (xtp_spinner_tick % (spinner_count * spinner_frame_duration_ms)) / spinner_frame_duration_ms;
+    const uint32_t now = millis();
+    if (now - xtp_spinner_last_frame_at < spinner_frame_duration_ms) return;
+    xtp_spinner_last_frame_at = now;
+
+    int spinner_index = (xtp_spinner_index + 1) % spinner_count;
     
     if (spinner_index != xtp_spinner_index) {
         xtp_spinner_index = spinner_index;

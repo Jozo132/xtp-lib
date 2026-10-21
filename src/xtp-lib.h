@@ -11,6 +11,9 @@
 #ifdef XTP_14A6_E
 #define XTP_DEVICE_NAME "XTP14A6E"
 #endif // XTP_DEVICE_NAME
+#ifdef XTP_3
+#define XTP_DEVICE_NAME "XTP3"
+#endif // XTP_DEVICE_NAME
 
 #ifndef XTP_DEVICE_NAME
 #define XTP_DEVICE_NAME "XTP?"
@@ -24,31 +27,56 @@
 #endif // STM32
 #include "xtp_config.h"
 #include "xtp_tools.h"
+#if !defined(XTP_3) || defined(XTP3_ENABLE_LOCAL_HARDWARE)
 #include "xtp_gpio.h"
 #include "xtp_uart.h"
-#include "xtp_oled.h"
 #include "xtp_flash.h"
+#endif
+#include "xtp_oled.h"
+#if defined(XTP_3)
+#include "xtp_aht20.h"
+#endif
+#if defined(XTP_3)
+#include "xtp_ethernet_lwip.h"
+#else
 #include "xtp_ethernet.h"
+#endif
 #include "xtp_thread.h"
 #include "xtp_time.h"
+#if !defined(XTP_3)
 #include "xtp_sntp.h"
 #include "xtp_ota.h"
+#else
+#include "xtp_sntp.h"
+#endif
 
 #include "iec_time.h"
+#if defined(XTP_3)
+using XtpOtaCallback = void (*)();
+inline XtpOtaCallback ota_shutdown = nullptr;
+inline void ota_setup() {}
+inline void ota_loop() {}
+#else
 #include "ota.h"
+#endif
 
+#if !defined(XTP_3)
 #include "rest_server.h"
 #include "xtp_http_server.h"
 #include "xtp_tcp_client.h"
+#endif
 #ifdef XTP_WEBSOCKETS
+#if !defined(XTP_3)
 #include "xtp_websocket.h"
 #include "xtp_ws_client.h"
+#endif
 #endif
 
 void xtp_setup() {
   IWatchdog.begin(60000000L);
   IWatchdog.reload();
   XTP_TIMING_INIT();  // Initialize timing telemetry
+#if !defined(XTP_3) || defined(XTP3_ENABLE_LOCAL_HARDWARE)
   gpio_setup();
   for (int i = 0; i < 10; i++) {
     digitalToggle(LED_BUILTIN);
@@ -59,13 +87,18 @@ void xtp_setup() {
   spi_setup();
   flash_setup();
   IWatchdog.reload();
+#endif
   getDeviceUID();
   time_setup();
-  // printDeviceUID();
   i2c_setup();
+#if defined(XTP_3)
+  aht20_setup();
+#endif
   oled_setup();
   ethernet_setup();
+#if !defined(XTP_3)
   ota_shutdown = []() { thread_pause(); };
+#endif
   ota_setup();
   
   web_server_setup();
@@ -79,13 +112,19 @@ void xtp_loop() {
   XTP_TIMING_START(XTP_TIME_LOOP_TOTAL);
   
   IWatchdog.reload();
+
+#if defined(XTP_3)
+  aht20_loop();
+#endif
   
+#if !defined(XTP_3) || defined(XTP3_ENABLE_LOCAL_HARDWARE)
   XTP_TIMING_START(XTP_TIME_I2C_LOOP);
-  i2c_loop();                   // I2C bus maintenance & auto-recovery
+  i2c_loop();
   XTP_TIMING_END(XTP_TIME_I2C_LOOP);
-  
+#endif
+
   XTP_TIMING_START(XTP_TIME_OLED_UPDATE);
-  oled_state_machine_update();  // Non-blocking OLED updates
+  oled_state_machine_update();
   XTP_TIMING_END(XTP_TIME_OLED_UPDATE);
   
   XTP_TIMING_START(XTP_TIME_ETH_LOOP);

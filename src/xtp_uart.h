@@ -11,7 +11,7 @@ bool uart_initialized = false;
 void uart_setup() {
     if (uart_initialized) return;
     uart_initialized = true;
-#ifndef HAL_PCD_MODULE_ENABLED 
+#if !defined(XTP_USB_ENABLED) || !(XTP_USB_ENABLED)
     Serial.setRx(UART_RX_pin);
     Serial.setTx(UART_TX_pin);
     Serial.begin(UART_BAUDRATE);

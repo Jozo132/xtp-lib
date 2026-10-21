@@ -4,12 +4,13 @@
 #include <SPI.h>
 #include "xtp_config.h"
 
-// Create the SPI port using SPI2 on pins PB15, PB14, and PB13
-// SPIClass MySPI(SPI_MOSI_pin, SPI_MISO_pin, SPI_SCK_pin);
-
 static SPISettings ETH_SPI_SET(ETH_SPI_SPEED, MSBFIRST, SPI_MODE0);
 static SPISettings FLASH_SPI_SET(FLASH_SPI_SPEED, MSBFIRST, SPI_MODE0);
 static SPISettings AUX_SPI_SET(AUX_SPI_SPEED, MSBFIRST, SPI_MODE0);
+
+#if defined(XTP_3)
+SPIClass SPI_FS(FS_MOSI_pin, FS_MISO_pin, FS_SCK_pin);
+#endif
 
 #if defined(AUX_MOSI_pin) && defined(AUX_MISO_pin) && defined(AUX_SCK_pin)
 #define EXP_SPI
@@ -20,19 +21,28 @@ void spi_setup() {
     if (spi_initialized) return;
     spi_initialized = true;
     
+#if defined(XTP_3)
+    pinMode(FS_CS_pin, OUTPUT);
+    digitalWrite(FS_CS_pin, HIGH);
+#else
     // Set up all CS pins as outputs (active-low, so start HIGH)
     pinMode(ETH_CS_pin, OUTPUT);
     digitalWrite(ETH_CS_pin, HIGH);
     pinMode(FLASH_CS_pin, OUTPUT);
     digitalWrite(FLASH_CS_pin, HIGH);
+#endif
 #ifdef AUX_CS_pin
     pinMode(AUX_CS_pin, OUTPUT);
     digitalWrite(AUX_CS_pin, HIGH);
 #endif
-    
+
+#if defined(XTP_3)
+    SPI_FS.begin();
+#else
     SPI.setMOSI(SPI_MOSI_pin);
     SPI.setMISO(SPI_MISO_pin);
     SPI.setSCLK(SPI_SCK_pin);
+#endif
 
 #ifdef EXP_SPI
     SPI_EXP.setMOSI(AUX_MOSI_pin);
@@ -53,6 +63,10 @@ enum SPIDeviceSelect_t {
 SPIDeviceSelect_t current_spi_device = SPI_None;
 
 void spi_select(SPIDeviceSelect_t device = SPI_None) {
+#if defined(XTP_3)
+    (void)device;
+    return;
+#else
     if (current_spi_device == device) return;
     if (current_spi_device != SPI_None) SPI.endTransaction();
 #ifdef SPI_IS_SHARED
@@ -100,6 +114,7 @@ void spi_select(SPIDeviceSelect_t device = SPI_None) {
         }
     }
 #endif // SPI_IS_SHARED
+#endif // XTP_3
 }
 #ifndef SPI_IS_SHARED
 SPIDeviceSelect_t current_spi_exp_device = SPI_None;

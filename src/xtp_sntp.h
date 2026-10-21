@@ -3,7 +3,42 @@
 #include <Arduino.h>
 
 #include "xtp_time.h"
+#if defined(XTP_3)
+#include "xtp_ethernet_lwip.h"
+#else
 #include "xtp_ethernet.h"
+#endif
+
+#if defined(XTP_3)
+
+xtp_lwip::SntpClient sntp_client;
+bool sntp_synchronized = false;
+
+void sntp_sync(const char* server, uint16_t port = 123) {
+    ip4_addr_t address = {};
+    if (server == nullptr || !ip4addr_aton(server, &address) ||
+        !sntp_client.begin(address, port)) {
+        Serial.println("Error connecting to the SNTP server");
+        return;
+    }
+
+    const uint32_t start = millis();
+    while (sntp_client.waiting() && millis() - start < 1000) {
+        xtp_lan8740::poll();
+        xtp_lwip::poll();
+        delay(1);
+    }
+
+    if (!sntp_client.synchronized()) {
+        Serial.println("SNTP request timed out");
+        return;
+    }
+
+    sntp_synchronized = true;
+    time_set_seconds(sntp_client.unixSeconds());
+}
+
+#else
 
 EthernetUDP sntp_client;
 bool sntp_synchronized = false;
@@ -62,3 +97,5 @@ void sntp_sync(const char* server, uint16_t port = 123) {
         Serial.println("Error parsing SNTP response");
     }
 }
+
+#endif

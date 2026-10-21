@@ -113,7 +113,7 @@
  * 
  */
 
-#include "xtp_uart.h"
+#include <Arduino.h>
 
 #include <Wire.h>
 
@@ -425,8 +425,8 @@ void i2c_setup() {
     
     Wire.setSDA(I2C_SDA_pin);
     Wire.setSCL(I2C_SCL_pin);
-    Wire.setClock(I2C_CLOCK);
     Wire.begin();
+    Wire.setClock(I2C_CLOCK);
     
     // Set Wire timeout (if supported by the platform)
 #if defined(ARDUINO_ARCH_STM32)
@@ -434,6 +434,9 @@ void i2c_setup() {
 #endif
     
     i2cBus.initialized = true;
+#if defined(XTP_3)
+    i2cBus.registerDevice(AHT20_I2C_ADDRESS, "AHT20", false);
+#endif
     Serial.println("[I2C] Bus initialized");
 }
 
