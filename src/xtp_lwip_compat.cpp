@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 
 extern "C" {
 #include <lwip/err.h>
@@ -38,12 +39,18 @@ struct UdpState {
 struct TcpState {
   tcp_pcb* pcb = nullptr;
   TcpClient::State state = TcpClient::IDLE;
+  bool closePending = false;
   uint8_t rxBuffer[TCP_BUFFER_SIZE] = {};
   uint16_t rxHead = 0;
   uint16_t rxTail = 0;
   ConnectCallback onConnect = nullptr;
   DisconnectCallback onDisconnect = nullptr;
   DataCallback onData = nullptr;
+};
+
+struct TcpServerState {
+  tcp_pcb* listener = nullptr;
+  TcpClient client;
 };
 
 struct HttpRoute {
@@ -108,6 +115,10 @@ UdpState* udpState(UdpSocket* socket) {
 
 TcpState* tcpState(TcpClient* client) {
   return reinterpret_cast<TcpState*>(client->nativeState());
+}
+
+TcpServerState* tcpServerState(TcpServer* server) {
+  return reinterpret_cast<TcpServerState*>(server->nativeState());
 }
 
 HttpState* httpState(HttpServer* server) {
@@ -192,10 +203,11 @@ err_t tcpReceive(void* argument, tcp_pcb* pcb, pbuf* packet, err_t error) {
   }
   if (packet == nullptr) {
     state->state = TcpClient::IDLE;
+    state->closePending = true;
     if (state->onDisconnect != nullptr) {
       state->onDisconnect("remote closed");
     }
-    return tcp_close(pcb);
+    return ERR_OK;
   }
   if (error != ERR_OK) {
     pbuf_free(packet);
@@ -228,8 +240,22 @@ void tcpError(void* argument, err_t error) {
   state->pcb = nullptr;
   state->state = TcpClient::IDLE;
   if (state->onDisconnect != nullptr) {
-    state->onDisconnect(lwip_strerr(error));
+    (void)error;
+    state->onDisconnect("tcp error");
   }
+}
+
+err_t tcpServerAccept(void* argument, tcp_pcb* pcb, err_t error) {
+  auto* state = static_cast<TcpServerState*>(argument);
+  if (state == nullptr || error != ERR_OK) {
+    if (pcb != nullptr) tcp_abort(pcb);
+    return error;
+  }
+  if (state->client.connected() || state->client.available() > 0) {
+    tcp_abort(pcb);
+    return ERR_ABRT;
+  }
+  return state->client.adoptAccepted(pcb) ? ERR_OK : ERR_ABRT;
 }
 
 const char* httpReason(int code) {
@@ -844,12 +870,26 @@ void TcpClient::stop() {
   if (state == nullptr || state->pcb == nullptr) {
     return;
   }
-  tcp_arg(state->pcb, nullptr);
-  if (tcp_close(state->pcb) != ERR_OK) {
-    tcp_abort(state->pcb);
+  tcp_pcb* pcb = state->pcb;
+  if (state->closePending &&
+      (pcb->unsent != nullptr || pcb->unacked != nullptr)) {
+    return;
+  }
+  tcp_arg(pcb, nullptr);
+  if (state->closePending) {
+    tcp_abort(pcb);
+    state->pcb = nullptr;
+    state->state = IDLE;
+    state->closePending = false;
+    return;
+  }
+  if (tcp_close(pcb) != ERR_OK) {
+    tcp_arg(pcb, state);
+    return;
   }
   state->pcb = nullptr;
   state->state = IDLE;
+  state->closePending = false;
 }
 
 size_t TcpClient::write(const uint8_t* data, size_t length) {
@@ -866,6 +906,63 @@ size_t TcpClient::write(const uint8_t* data, size_t length) {
 }
 
 size_t TcpClient::write(uint8_t value) { return write(&value, 1); }
+
+size_t TcpClient::write(const char* text) {
+  return text == nullptr ? 0 : print(text);
+}
+
+size_t TcpClient::write(const char* text, size_t length) {
+  return text == nullptr
+             ? 0
+             : write(reinterpret_cast<const uint8_t*>(text), length);
+}
+
+size_t TcpClient::print(const char* text) {
+  return text == nullptr ? 0 : write(reinterpret_cast<const uint8_t*>(text), strlen(text));
+}
+
+size_t TcpClient::print(unsigned long value, int base) {
+  char buffer[24] = {};
+  if (base == 16) {
+    snprintf(buffer, sizeof(buffer), "%lx", value);
+  } else {
+    snprintf(buffer, sizeof(buffer), "%lu", value);
+  }
+  return print(buffer);
+}
+
+int TcpClient::printf(const char* format, ...) {
+  if (format == nullptr) return 0;
+  char buffer[256] = {};
+  va_list arguments;
+  va_start(arguments, format);
+  int length = vsnprintf(buffer, sizeof(buffer), format, arguments);
+  va_end(arguments);
+  if (length <= 0) return length;
+  size_t outputLength = static_cast<size_t>(length);
+  if (outputLength >= sizeof(buffer)) outputLength = sizeof(buffer) - 1;
+  return static_cast<int>(write(reinterpret_cast<const uint8_t*>(buffer), outputLength));
+}
+
+int TcpClient::peek() const {
+  auto* state = reinterpret_cast<const TcpState*>(state_);
+  return available() == 0 ? -1 : state->rxBuffer[state->rxTail];
+}
+
+void TcpClient::flush() {
+  auto* state = tcpState(this);
+  if (state != nullptr && state->pcb != nullptr) tcp_output(state->pcb);
+}
+
+void TcpClient::setNoDelay(bool enabled) {
+  auto* state = tcpState(this);
+  if (state == nullptr || state->pcb == nullptr) return;
+  if (enabled) {
+    tcp_nagle_disable(state->pcb);
+  } else {
+    tcp_nagle_enable(state->pcb);
+  }
+}
 
 int TcpClient::available() const {
   auto* state = reinterpret_cast<const TcpState*>(state_);
@@ -913,6 +1010,70 @@ void TcpClient::onDisconnect(DisconnectCallback callback) {
 
 void TcpClient::onData(DataCallback callback) {
   tcpState(this)->onData = callback;
+}
+
+bool TcpClient::adoptAccepted(void* nativePcb) {
+  auto* state = tcpState(this);
+  auto* pcb = static_cast<tcp_pcb*>(nativePcb);
+  if (state == nullptr || pcb == nullptr) return false;
+  stop();
+  state->rxHead = 0;
+  state->rxTail = 0;
+  state->pcb = pcb;
+  state->state = CONNECTED;
+  state->closePending = false;
+  tcp_arg(pcb, state);
+  tcp_recv(pcb, tcpReceive);
+  tcp_err(pcb, tcpError);
+  return true;
+}
+
+TcpServer::~TcpServer() {
+  stop();
+  delete tcpServerState(this);
+}
+
+bool TcpServer::begin(uint16_t port) {
+  if (state_ == nullptr) {
+    state_ = reinterpret_cast<StateData*>(new TcpServerState());
+  }
+  auto* state = tcpServerState(this);
+  stop();
+  state->listener = tcp_new();
+  if (state->listener == nullptr ||
+      tcp_bind(state->listener, IP4_ADDR_ANY, port) != ERR_OK) {
+    stop();
+    return false;
+  }
+  state->listener = tcp_listen_with_backlog(state->listener, 1);
+  if (state->listener == nullptr) return false;
+  tcp_arg(state->listener, state);
+  tcp_accept(state->listener, tcpServerAccept);
+  return true;
+}
+
+void TcpServer::stop() {
+  auto* state = tcpServerState(this);
+  if (state == nullptr) return;
+  state->client.stop();
+  if (state->listener != nullptr) {
+    tcp_arg(state->listener, nullptr);
+    if (tcp_close(state->listener) != ERR_OK) tcp_abort(state->listener);
+    state->listener = nullptr;
+  }
+}
+
+TcpClient* TcpServer::available() {
+  auto* state = tcpServerState(this);
+  if (state == nullptr) return nullptr;
+  auto* clientState = tcpState(&state->client);
+  if (clientState != nullptr && clientState->closePending) {
+    state->client.stop();
+  }
+  if (!state->client.connected() && state->client.available() == 0) {
+    return nullptr;
+  }
+  return &state->client;
 }
 
 bool HttpServer::begin(uint16_t port) {

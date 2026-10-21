@@ -48,7 +48,6 @@ void spi_setup() {
     SPI_EXP.setMOSI(AUX_MOSI_pin);
     SPI_EXP.setMISO(AUX_MISO_pin);
     SPI_EXP.setSCLK(AUX_SCK_pin);
-    SPI_EXP.setSSEL(AUX_CS_pin);
     SPI_EXP.begin();
 #endif // EXP_SPI
 }

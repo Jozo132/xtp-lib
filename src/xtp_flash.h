@@ -1,16 +1,16 @@
 #pragma once
 
 #include <Arduino.h>
-#include <SPIMemory.h>
+#include <SpiNorFlash.h>
 
 #include "xtp_config.h"
 #include "xtp_spi.h"
 #include "xtp_retain.h"
 
 #if defined(XTP_3)
-SPIFlash flash(FS_CS_pin, &SPI_FS);
+SpiNorFlash flash(FS_CS_pin, SPI_FS);
 #else
-SPIFlash flash(FLASH_CS_pin);
+SpiNorFlash flash(FLASH_CS_pin, SPI);
 #endif
 
 void flash_print_info();
@@ -26,9 +26,10 @@ void flash_setup() {
 #if !defined(XTP_3)
     spi_select(SPI_Flash);
 #endif
+    flash.setClock(FLASH_SPI_SPEED);
     flash.begin();
     if (flash.error()) {
-        Serial.println(flash.error(VERBOSE));
+        flash.error(true);
         return;
     } else {
         flash_initialized = true;

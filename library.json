@@ -10,6 +10,7 @@
     "includeDir": "src/lwip/src/include",
     "srcFilter": [
       "-<*>",
+      "+<SpiNorFlash.cpp>",
       "+<lan8740_lwip.cpp>",
       "+<xtp_ethernet_lwip.cpp>",
       "+<xtp_lwip_compat.cpp>",

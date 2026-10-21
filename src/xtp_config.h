@@ -198,8 +198,8 @@
 
 #define FS_CS_pin                 PA8
 #define FS_SCK_pin                PA9
-#define FS_MISO_pin               PC_2
-#define FS_MOSI_pin               PC_3
+#define FS_MISO_pin               PC2_C
+#define FS_MOSI_pin               PC3_C
 
 #define AUX_MISO_pin              PE5
 #define AUX_MOSI_pin              PE6
@@ -300,7 +300,7 @@
 #endif // ETH_SPI_SPEED
 
 #ifndef FLASH_SPI_SPEED
-#define FLASH_SPI_SPEED 32000000
+#define FLASH_SPI_SPEED 1000000
 #endif // FLASH_SPI_SPEED
 
 #ifndef AUX_SPI_SPEED

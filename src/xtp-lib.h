@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include <SPI.h>
 
 // Include timing telemetry header early (before other headers use it)
 #include "xtp_timing.h"
@@ -27,9 +28,11 @@
 #endif // STM32
 #include "xtp_config.h"
 #include "xtp_tools.h"
+#if !defined(XTP_3) || defined(XTP3_ENABLE_LOCAL_HARDWARE) || defined(NOTA_EXT_FLASH_OTA)
 #if !defined(XTP_3) || defined(XTP3_ENABLE_LOCAL_HARDWARE)
 #include "xtp_gpio.h"
 #include "xtp_uart.h"
+#endif
 #include "xtp_flash.h"
 #endif
 #include "xtp_oled.h"
@@ -48,17 +51,38 @@
 #include "xtp_ota.h"
 #else
 #include "xtp_sntp.h"
+#include <NOTA.h>
 #endif
 
 #include "iec_time.h"
 #if defined(XTP_3)
 using XtpOtaCallback = void (*)();
 inline XtpOtaCallback ota_shutdown = nullptr;
-inline void ota_setup() {}
-inline void ota_loop() {}
+inline bool xtp3_ota_started = false;
+inline NOTAClass xtp3_ota;
+inline void ota_setup() {
+  xtp3_ota.setHostname(XTP3_ETH_HOSTNAME);
+  xtp3_ota.setPlatform("STM32");
+  xtp3_ota.setBoard("STM32H723VGT6");
+  xtp3_ota.setVersion(XTP_DEVICE_NAME);
+  xtp3_ota.setPort(3232);
+  xtp3_ota.setRebootOnSuccess(true);
+}
+inline void ota_loop() {
+  if (!ethernet_ready()) return;
+  if (!xtp3_ota_started) {
+    xtp3_ota.begin();
+    xtp3_ota_started = true;
+  }
+  xtp3_ota.handle();
+}
 #else
 #include "ota.h"
 #endif
+
+#include "xtp_status.h"
+
+volatile uint8_t xtp_loop_stage = 0;
 
 #if !defined(XTP_3)
 #include "rest_server.h"
@@ -84,6 +108,8 @@ void xtp_setup() {
   }
   digitalWrite(LED_BUILTIN, HIGH);
   uart_setup();
+#endif
+#if !defined(XTP_3) || defined(XTP3_ENABLE_LOCAL_HARDWARE) || defined(NOTA_EXT_FLASH_OTA)
   spi_setup();
   flash_setup();
   IWatchdog.reload();
@@ -100,6 +126,7 @@ void xtp_setup() {
   ota_shutdown = []() { thread_pause(); };
 #endif
   ota_setup();
+  xtp_status_setup();
   
   web_server_setup();
 #ifdef XTP_WEBSOCKETS
@@ -116,16 +143,19 @@ void xtp_loop() {
 #if defined(XTP_3)
   aht20_loop();
 #endif
+  xtp_loop_stage = 1;
   
 #if !defined(XTP_3) || defined(XTP3_ENABLE_LOCAL_HARDWARE)
   XTP_TIMING_START(XTP_TIME_I2C_LOOP);
   i2c_loop();
   XTP_TIMING_END(XTP_TIME_I2C_LOOP);
 #endif
+  xtp_loop_stage = 2;
 
   XTP_TIMING_START(XTP_TIME_OLED_UPDATE);
   oled_state_machine_update();
   XTP_TIMING_END(XTP_TIME_OLED_UPDATE);
+  xtp_loop_stage = 3;
   
   XTP_TIMING_START(XTP_TIME_ETH_LOOP);
   ethernet_loop();
@@ -133,14 +163,21 @@ void xtp_loop() {
   xtp_ws_loop(); // Websocket loop
 #endif
   XTP_TIMING_END(XTP_TIME_ETH_LOOP);
+  xtp_loop_stage = 4;
   
   XTP_TIMING_START(XTP_TIME_OTA_LOOP);
   ota_loop();
   XTP_TIMING_END(XTP_TIME_OTA_LOOP);
+  xtp_loop_stage = 5;
+
+  xtp_loop_stage = 10;
+  xtp_status_loop();
+  xtp_loop_stage = 6;
   
   XTP_TIMING_START(XTP_TIME_OLED_TICKER);
   oled_ticker();
   XTP_TIMING_END(XTP_TIME_OLED_TICKER);
+  xtp_loop_stage = 7;
   
   XTP_TIMING_END(XTP_TIME_LOOP_TOTAL);
 }

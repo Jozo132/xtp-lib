@@ -1,4 +1,6 @@
 #pragma once
+#ifndef XTP_LWIP_COMPAT_H
+#define XTP_LWIP_COMPAT_H
 
 #include <stddef.h>
 #include <stdint.h>
@@ -59,6 +61,14 @@ class TcpClient {
   void stop();
   size_t write(const uint8_t* data, size_t length);
   size_t write(uint8_t value);
+  size_t write(const char* text);
+  size_t write(const char* text, size_t length);
+  size_t print(const char* text);
+  size_t print(unsigned long value, int base = 10);
+  int printf(const char* format, ...);
+  int peek() const;
+  void flush();
+  void setNoDelay(bool enabled);
   int available() const;
   int read();
   int read(uint8_t* data, size_t length);
@@ -67,6 +77,22 @@ class TcpClient {
   void onConnect(ConnectCallback callback);
   void onDisconnect(DisconnectCallback callback);
   void onData(DataCallback callback);
+  bool adoptAccepted(void* nativePcb);
+  void* nativeState() const { return state_; }
+
+ private:
+  struct StateData;
+  StateData* state_ = nullptr;
+};
+
+class TcpServer {
+ public:
+  TcpServer() = default;
+  ~TcpServer();
+
+  bool begin(uint16_t port);
+  void stop();
+  TcpClient* available();
   void* nativeState() const { return state_; }
 
  private:
@@ -192,3 +218,5 @@ using RestServer = HttpServer;
 void poll();
 
 }  // namespace xtp_lwip
+
+#endif  // XTP_LWIP_COMPAT_H
