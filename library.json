@@ -11,21 +11,19 @@
   "platforms": ["ststm32"],
   "dependencies": [
     {
-      "name": "lwip",
-      "version": "https://github.com/lwip-tcpip/lwip.git"
+      "name": "stm32duino/STM32duino LwIP",
+      "version": "2.2.1"
     }
   ],
   "build": {
     "srcDir": "src",
-    "includeDir": "src/lwip/src/include",
+    "includeDir": "src",
     "srcFilter": [
       "-<*>",
       "+<SpiNorFlash.cpp>",
       "+<lan8740_lwip.cpp>",
       "+<xtp_ethernet_lwip.cpp>",
-      "+<xtp_lwip_compat.cpp>",
-      "+<lwip/src/core/**>",
-      "+<lwip/src/netif/ethernet.c>"
+      "+<xtp_lwip_compat.cpp>"
     ]
   }
 }
