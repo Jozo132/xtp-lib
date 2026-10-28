@@ -2,9 +2,19 @@
   "name": "xtp-lib",
   "version": "0.1.9",
   "description": "XTP Board helper library",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Jozo132/xtp-lib.git"
+  },
   "keywords": ["ethernet", "stm32", "xtp"],
   "frameworks": ["arduino"],
   "platforms": ["ststm32"],
+  "dependencies": [
+    {
+      "name": "lwip",
+      "version": "https://github.com/lwip-tcpip/lwip.git"
+    }
+  ],
   "build": {
     "srcDir": "src",
     "includeDir": "src/lwip/src/include",
